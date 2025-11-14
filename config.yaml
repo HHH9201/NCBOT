@@ -1,0 +1,25 @@
+root: '1783069903'
+bt_uin: '58805194'
+enable_webui_interaction: false
+debug: false
+github_proxy: null
+check_ncatbot_update: true
+skip_ncatbot_install_check: false
+websocket_timeout: 15
+napcat:
+  ws_uri: ws://localhost:3001
+  ws_token: he031701
+  ws_listen_ip: localhost
+  webui_uri: http://localhost:6099
+  webui_token: -UqS4YnkIQVl9S0KFwR8VGprOQMoCdv8628KYUt0GX8
+  enable_webui: true
+  check_napcat_update: false
+  stop_napcat: false
+  remote_mode: false
+  report_self_message: false
+  report_forward_message_detail: true
+plugin:
+  plugins_dir: plugins
+  plugin_whitelist: []
+  plugin_blacklist: []
+  skip_plugin_load: false

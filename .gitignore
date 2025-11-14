@@ -1,0 +1,24 @@
+# ============== 运行时生成的垃圾 ==============
+*.log
+*.pid
+*.db
+*.mmap3
+*.pyc
+*.pyo
+__pycache__/
+.vscode/
+.vscode_bak/
+data/
+logs/
+napcat_data/
+Pic/
+avatar/
+mmkv/
+msf/
+Emoji/
+OnlineStatus/
+dataline/
+flashfransfer/
+Crashpad/
+nt_temp/
+nt_db/

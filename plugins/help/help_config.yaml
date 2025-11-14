@@ -1,0 +1,39 @@
+title: 🤖 NcatBot 帮助中心
+description: 欢迎使用NcatBot！以下是可用的插件和命令列表：
+footer: 💡 提示：发送 '帮助' 或 '菜单' 查看此信息
+plugins:
+  GPT:
+    description: 🤖 AI对话功能 - 与智能AI进行对话
+    commands:
+    - '@机器人 你的问题'
+    example: '@机器人 今天天气怎么样？'
+  JM:
+    description: 🖼️ 精美图片功能 - 获取精美图片
+    commands:
+    - JM
+    - 美图
+    example: JM
+  txt:
+    description: 📄 文档查询功能 - 查询游戏相关文档
+    commands:
+    - 文档
+    - 帮助文档
+    example: 文档
+  welcome:
+    description: 👋 欢迎新成员 - 自动欢迎新加入群成员
+    commands:
+    - 设置欢迎
+    - 查看欢迎
+    example: 设置欢迎 欢迎新成员！
+  xydj:
+    description: 🎲 幸运抽奖功能 - 参与抽奖活动
+    commands:
+    - 抽奖
+    - xydj
+    example: 抽奖
+  RecallMessage:
+    description: 🗑️ 消息撤回功能 - 撤回机器人发送的消息
+    commands:
+    - 撤回
+    - 删除
+    example: 撤回
