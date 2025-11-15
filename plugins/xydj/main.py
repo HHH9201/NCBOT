@@ -12,10 +12,10 @@ import yaml
 import string
 import base64
 import aiohttp
+import aiofiles
 import requests
 import urllib3
 from pathlib import Path
-from PIL import Image as PILImage, ImageDraw, ImageFont
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from ncatbot.plugin import BasePlugin, CompatibleEnrollment
@@ -33,8 +33,7 @@ bot = CompatibleEnrollment
 
 
 # -------------------- 基础配置 --------------------
-FONT_PATH = "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"
-QQ_IMG = "tool/QQ.jpg"
+QQ_IMG = "/home/hjh/BOT/NCBOT/plugins/xydj/tool/QQ.png"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 COOKIES = {
     "_ok4_": "rXVILyG9Y1k4kIDgieKh90vFfvLY3td+1TkK8/OboMOTXy19hJyWxRHaN9Ftvk8DxCaUtKpUy1FbHvF8KPWnieifatnKrx219XqRAvRSnJwnTCtLQUYFvCFJIy4Q+e8m",
@@ -176,14 +175,7 @@ def extract_english_name(title: str) -> tuple[str, str]:
     
     return english_part.strip(), chinese_display.strip()
 
-def get_text_size(font, text):
-    lines = text.split('\n')
-    max_w = total_h = 0
-    for line in lines:
-        bbox = font.getbbox(line)
-        max_w = max(max_w, bbox[2] - bbox[0])
-        total_h += bbox[3] - bbox[1]
-    return max_w, total_h
+# 删除 get_text_size 函数，不再使用
 
 async def fetch_text(url, **kwargs):
     async with aiohttp.ClientSession(cookies=COOKIES, headers=HEADERS) as session:
@@ -214,22 +206,36 @@ async def search_game(game_name: str):
         games.append({"title": title, "url": a['href'], "img": img_src})
     if not games:
         return None, None
-    text_lines = [f"{idx+1}. {g['title']}" for idx, g in enumerate(games)]
-    font = ImageFont.truetype(FONT_PATH, 20) if os.path.exists(FONT_PATH) else ImageFont.load_default()
-    w, h = get_text_size(font, "\n".join(text_lines))
-    img = PILImage.new("RGB", (w + 20, h + 20), "white")
-    draw = ImageDraw.Draw(img)
-    draw.text((10, 10), "\n".join(text_lines), font=font, fill="black")
     
-    # 将图片转换为base64编码，避免保存到本地文件
-    import io
-    img_buffer = io.BytesIO()
-    img.save(img_buffer, format='PNG')
-    img_buffer.seek(0)
-    img_base64 = base64.b64encode(img_buffer.getvalue()).decode('utf-8')
-    pic_path = f"data:image/png;base64,{img_base64}"
+    # 直接返回文本格式的游戏列表，不生成图片
+    text_lines = []
+    for idx, g in enumerate(games):
+        # 提取游戏名和版本信息
+        title_parts = g['title'].split('|')
+        game_name = title_parts[0].strip()
+        
+        # 提取关键信息，保持简洁
+        key_info = []
+        for part in title_parts[1:]:
+            part = part.strip()
+            if any(keyword in part.lower() for keyword in ['v', '版', 'dlc', '中文', '手柄']):
+                key_info.append(part)
+        
+        # 构建简洁的横线分隔格式
+        display_text = f"{idx+1}. {game_name}"
+        if key_info:
+            display_text += f"|{'|'.join(key_info[:4])}|"  # 最多显示4个关键信息
+        
+        text_lines.append(display_text)
+        text_lines.append("════════════")  # 添加分隔线
     
-    return pic_path, games
+    # 移除最后一个多余的分隔线
+    if text_lines:
+        text_lines.pop()
+    
+    text_result = "\n".join(text_lines)
+    
+    return text_result, games
 
 # -------------------- xydj 详情 --------------------
 async def extract_download_info(game_url: str):
@@ -526,7 +532,7 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
     # 1. 赞助节点
     # 使用 base64 编码的图片
     base_dir = "/home/hjh/BOT/NCBOT"
-    abs_qq_img_path = os.path.join(base_dir, "tool", "QQ.jpg")
+    abs_qq_img_path = QQ_IMG
     qq_img_base64 = image_to_base64(abs_qq_img_path)
     
     sponsor_content = [{"type": "text", "data": {"text": 赞助内容[0]}}]
@@ -701,6 +707,7 @@ class Xydj(BasePlugin):
             联机内容 = []
             if byrut_results:
                 for item in byrut_results:
+                    联机内容.append("解压密码：online-fix.me\n")
                     联机内容.append(f"游戏名字：{chinese_display}\n")   # ← 中文展示名
                     联机内容.append(f"更新时间：{item['update_time']}\n")
                     联机内容.append(f"种子链接：{item['torrent_url'] or '暂无'}")
@@ -821,8 +828,8 @@ class Xydj(BasePlugin):
                 )
                 return
             try:
-                pic_path, games = await search_game(game_name)
-                if not pic_path:
+                text_result, games = await search_game(game_name)
+                if not text_result:
                     await self.api.post_group_msg(
                         group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text("未找到，检查游戏名字，搜索游戏字数少一点试试呢")])
                     )
@@ -837,9 +844,9 @@ class Xydj(BasePlugin):
                     await self.process_single_game(games[0], msg)
                     return
                 
-                # 多个游戏结果，需要用户选择
+                # 多个游戏结果，需要用户选择（直接发送文本，不发送图片）
                 await self.api.post_group_msg(
-                    group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text("请根据序号选择游戏（30秒内未选择将自动退出）：\n"), Image(pic_path)])
+                    group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"🎯 发现 {len(games)} 款游戏\n════════════\n{text_result}\n════════════\n⏰ 30秒内回复序号选择 | 回复 0 取消操作")])
                 )
                 self.waiting_for_reply = True
                 self.user_who_sent_command = msg.user_id

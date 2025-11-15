@@ -9,6 +9,7 @@ from ncatbot.utils import get_log
 # ========== 创建 BotClient ==========
 bot = BotClient()
 _log = get_log()
+_log.setLevel('INFO')
 
 # ========= 注册回调函数 ==========
 @bot.group_event()

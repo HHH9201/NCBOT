@@ -7,7 +7,7 @@ from ncatbot.core.message import MessageChain
 from ncatbot.core.event.message_segment.message_segment import Text, Reply
 from ncatbot.utils import get_log
 
-_log = get_log(); _log.setLevel('DEBUG')
+_log = get_log(); _log.setLevel('INFO')
 
 class GPT(BasePlugin):
     name, version = "GPT", "3.2.1"
@@ -20,7 +20,7 @@ class GPT(BasePlugin):
     cache: Dict[str, str] = {}
     cache_time: Dict[str, float] = {}
     cache_timeout = 300
-    bot_qq = "2918988201"
+    bot_qq = "58805194"
 
     def trim(self, m: List[Dict]) -> List[Dict]: return m[-20:]
     def _clean_cache(self):

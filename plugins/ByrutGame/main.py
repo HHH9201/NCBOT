@@ -400,7 +400,7 @@ class ByrutGame(BasePlugin):
         txt = "觉得好用的话可以赞助一下服务器的费用，5毛1快不嫌少，5元10元不嫌多"
         fixed_message_node = {"type": "node", "data": {"content": [
             {"type": "text", "data": {"text": txt}},
-            {"type": "image", "data": {"file": "/home/h/BOT/NC/plugins/xydj/tool/QQ.jpg"}}
+            {"type": "image", "data": {"file": "/home/h/BOT/NC/plugins/xydj/tool/QQ.png"}}
         ]}}    
 
         payload_messages.append(fixed_message_node)

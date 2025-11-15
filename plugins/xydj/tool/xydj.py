@@ -258,7 +258,7 @@ def send_forward_message(group_id, messages, api):
         # 添加固定消息和图片到一个新的节点
     fixed_message_node = {"type": "node", "data": {"content": [
         {"type": "text", "data": {"text": "觉得好用的话可以赞助一下服务器的费用，5毛1快不嫌少，5元10元不嫌多"}},
-        {"type": "image", "data": {"file": "/home/h/BOT/NC/plugins/xydj/tool/QQ.jpg"}}  # 替换图片URL
+        {"type": "image", "data": {"file": "/home/h/BOT/NC/plugins/xydj/tool/QQ.png"}}  # 替换图片URL
     ]}}
     payload_messages.append(fixed_message_node)
     for text, image_url in messages:
