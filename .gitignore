@@ -8,6 +8,7 @@
 __pycache__/
 .vscode/
 .vscode_bak/
+参考/
 data/
 logs/
 napcat_data/

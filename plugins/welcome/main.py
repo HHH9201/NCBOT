@@ -106,13 +106,20 @@ class Welcome(BasePlugin):
 
     # ---------- 事件 ----------
     @bot.notice_event
-    async def on_notice(self, notice: dict):
+    async def on_notice(self, notice):
         """统一处理加群 / 退群"""
-        notice_type = notice.get("notice_type")
+        # 处理NoticeEvent对象或dict类型
+        if hasattr(notice, 'notice_type'):
+            notice_type = notice.notice_type
+            group_id = notice.group_id if hasattr(notice, 'group_id') else None
+            user_id = str(notice.user_id) if hasattr(notice, 'user_id') else None
+        else:
+            notice_type = notice.get("notice_type")
+            group_id = notice.get("group_id")
+            user_id = str(notice.get("user_id"))
+        
         if notice_type not in ("group_increase", "group_decrease"):
             return
-        group_id = notice.get("group_id")
-        user_id = str(notice.get("user_id"))
 
         # ---- 加群 ----
         if notice_type == "group_increase":

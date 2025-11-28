@@ -1,0 +1,28 @@
+{
+  "speak_rank": {
+    "id": "主键ID，自增",
+    "group_id": "群号，QQ群号码，用于区分不同群",
+    "user_id": "用户QQ号，群成员的QQ号码",
+    "speak_count": "发言次数，累计发言次数，默认0",
+    "last_speak_time": "最后发言时间，记录最后一次发言的时间"
+  },
+  "sign_in_records": {
+    "id": "主键ID，自增主键，唯一标识每条签到记录",
+    "user_id": "用户QQ号，签到用户的QQ号码",
+    "group_id": "群号，用户所在QQ群号码",
+    "sign_date": "签到日期，签到的日期（年-月-日）",
+    "points_earned": "获得积分，本次签到获得的积分数",
+    "consecutive_days": "连续天数，连续签到天数",
+    "total_points": "总积分，签到后的累计总积分",
+    "created_at": "创建时间，记录创建的时间戳"
+  },
+  "user_points": {
+    "id": "主键ID，自增主键，唯一标识每个用户记录",
+    "user_id": "用户QQ号，用户的QQ号码",
+    "group_id": "群号，用户所在QQ群号码",
+    "total_points": "总积分，用户的累计总积分数",
+    "consecutive_days": "连续签到天数，当前连续签到天数",
+    "last_sign_date": "最后签到日期，最后一次签到的日期",
+    "updated_at": "更新时间，记录最后更新的时间戳"
+  }
+}

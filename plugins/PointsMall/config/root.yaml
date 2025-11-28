@@ -1,0 +1,22 @@
+# /home/hjh/BOT/NCBOT/plugins/PointsMall/config/root.yaml
+# Root用户特权配置文件
+
+# Root用户QQ号列表 - 在这里添加Root用户的QQ号
+root_users:
+  - "1783069903"  # 默认Root用户，替换为你的QQ号
+  - "123456789"   # 测试用Root用户
+  # - "你的QQ号"  # 取消注释并替换为实际QQ号
+  # - "朋友的QQ号"  # 可以添加多个Root用户
+
+# Root用户特权配置
+privileges:
+  # 无限签到（不受每日签到限制）
+  unlimited_sign_in: true
+  
+  # 连续签到天数不受中断影响
+  consecutive_days_protected: true
+
+# 特权说明
+# 1. 无限签到：Root用户可以多次签到，不受每日一次限制
+# 2. 连续保护：连续签到天数不会因为中断而重置
+# 3. 特殊标识：在消息、排行榜中显示特殊标识

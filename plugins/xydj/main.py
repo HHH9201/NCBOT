@@ -36,11 +36,11 @@ bot = CompatibleEnrollment
 QQ_IMG = "/home/hjh/BOT/NCBOT/plugins/xydj/tool/QQ.png"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 COOKIES = {
-    "_ok4_": "rXVILyG9Y1k4kIDgieKh90vFfvLY3td+1TkK8/OboMOTXy19hJyWxRHaN9Ftvk8DxCaUtKpUy1FbHvF8KPWnieifatnKrx219XqRAvRSnJwnTCtLQUYFvCFJIy4Q+e8m",
+    "_ok4_": "C2NXbt1hid3Z7pXib67YdB8NzGB5FkiRD3s+ZcGLsnMAg0E0XJLL0YqClny4uYtuJz7E1z5QyCbIu4WnmkUSE8JqDrZmYclPpIIj4RtJsIt8EdH+sR/nnmOS4k0GqmOJ",
     "ripro_notice_cookie": "1",
-    "PHPSESSID": "1fut51h2i7sv2mdvhvidv9pkd7",
+    "PHPSESSID": "mi5ibvak6oi5sin4stq86si8i1",
     "wordpress_test_cookie": "WP%20Cookie%20check",
-    "wordpress_logged_in_c1baf48ff9d49282e5cd4050fece6d34": "HHH9201%7C1764237859%7CkQLKFXSEU2K0XbKjLJfoETxxJ5CHNvJgKVxRYmioDSb%7C260dc5fc35654ac8934f17354a9b7e0c81894dcee46f8d94e02f9cc7c6123b20"
+    "wordpress_logged_in_c1baf48ff9d49282e5cd4050fece6d34": "HHH9201%7C1765536473%7C3CP18asLM5a8tSvH8bXM3u0XZig4oO3kVjzJnlMuF2J%7Ca7ab2190b8723aac448e520abe3bf93fea488edd127a4e291b891e697e74918f"
 }
 PROXY = "http://127.0.0.1:7890"
 BYRUT_BASE = "https://byrut-worker.1783069903.workers.dev"
@@ -246,11 +246,92 @@ async def extract_download_info(game_url: str):
         if not box:
             return ["未找到下载区域"]
         results = []
-        groups = box.select('div.btn-group')
-        unzip_btn = groups[-1].select_one('button.go-copy') if groups else None
-        results.append(f"解压密码: {unzip_btn['data-clipboard-text'].strip() if unzip_btn else '未找到'}")
-        bdpan_btn = groups[0].select_one('button.go-copy') if groups else None
-        results.append(f"百度网盘提取码: {bdpan_btn['data-clipboard-text'].strip() if bdpan_btn else '未找到'}")
+        
+        # 提取解压密码 - 支持两种不同的HTML格式
+        password_found = False
+        
+        # 方法1: 从按钮组中提取解压密码（第一种格式）
+        # 查找按钮组中包含"解压密码"文本的按钮
+        password_btns = box.select('div.btn-group button.go-copy[data-clipboard-text]')
+        for btn in password_btns:
+            btn_text = btn.get_text(strip=True)
+            # 检查按钮文本或相邻的链接文本是否包含"解压密码"
+            adjacent_link = btn.find_previous_sibling('a') if btn else None
+            link_text = adjacent_link.get_text(strip=True) if adjacent_link else ""
+            
+            if ('解压密码' in btn_text or '解压密码' in link_text):
+                clipboard_text = btn.get('data-clipboard-text', '').strip()
+                if clipboard_text:  # 确保密码不为空
+                    results.append(f"解压密码: {clipboard_text}")
+                    password_found = True
+                    break
+        
+        # 方法2: 从down-info区域提取解压密码（第二种格式）
+        if not password_found:
+            down_info = box.select_one('div.down-info')
+            if down_info:
+                # 查找包含"解压密码"的li元素
+                password_lis = down_info.select('ul.infos li')
+                for li in password_lis:
+                    data_label = li.select_one('p.data-label')
+                    if data_label and '解压密码' in data_label.get_text():
+                        info_p = li.select_one('p.info')
+                        if info_p:
+                            # 提取密码文本，可能包含在span或b标签内
+                            password_span = info_p.select_one('span')
+                            password_b = info_p.select_one('b')
+                            
+                            if password_span:
+                                password = password_span.get_text(strip=True)
+                            elif password_b:
+                                password = password_b.get_text(strip=True)
+                            else:
+                                password = info_p.get_text(strip=True)
+                            
+                            # 验证密码格式并添加到结果
+                            if password and password != "解压密码=安装密码、激活码":  # 排除说明文字
+                                results.append(f"解压密码: {password}")
+                                password_found = True
+                                break
+        
+        # 方法3: 通用备用方案 - 查找任何可能包含密码的元素
+        if not password_found:
+            # 查找所有可能包含密码的元素
+            potential_password_elements = box.select('[data-clipboard-text]')
+            for element in potential_password_elements:
+                clipboard_text = element.get('data-clipboard-text', '').strip()
+                element_text = element.get_text(strip=True)
+                
+                # 判断是否为有效密码格式
+                if (clipboard_text and 
+                    len(clipboard_text) >= 4 and 
+                    not any(keyword in clipboard_text for keyword in ['百度', '网盘', '提取', 'https', 'http']) and
+                    ('密码' in element_text or '解压' in element_text)):
+                    results.append(f"解压密码: {clipboard_text}")
+                    password_found = True
+                    break
+        
+        # 如果所有方法都失败了
+        if not password_found:
+            results.append("解压密码: 未找到")
+        
+        # 提取百度网盘提取码
+        bdpan_btn = None
+        btn_groups = box.select('div.btn-group')
+        if btn_groups:
+            # 查找包含"百度网盘"的按钮组
+            for group in btn_groups:
+                a_tag = group.select_one('a[href*="goto?down="]')
+                if a_tag and '百度网盘' in a_tag.get_text():
+                    bdpan_btn = group.select_one('button.go-copy[data-clipboard-text]')
+                    break
+        
+        if bdpan_btn and bdpan_btn.has_attr('data-clipboard-text'):
+            results.append(f"百度网盘提取码: {bdpan_btn['data-clipboard-text'].strip()}")
+        else:
+            results.append("百度网盘提取码: 未找到")
+            
+        # 提取下载链接
         for a in box.select("a[target='_blank'][href*='goto?down=']"):
             name = a.get_text(strip=True)
             if '解压密码' in name:
@@ -676,51 +757,73 @@ class Xydj(BasePlugin):
             self.timer_task.cancel()
             self.timer_task = None
 
-    async def process_single_game(self, game, msg):
-        """处理单个游戏的自动转发"""
+    async def process_game_resource(self, game, msg):
+        """统一处理游戏资源获取和发送的函数（并行处理单机版和联机版资源）"""
         try:
-            # --- 关键改动：获取处理后的名字和中文展示名 ---
+            # 获取处理后的名字和中文展示名
             english_keyword, chinese_display = extract_english_name(game['title'])
             # 打印搜索用的英文名到控制台
             print(f"[搜索关键词] 中文名: {chinese_display}, 英文名: {english_keyword}")
 
-            # 1. 单机版（用中文展示名）
-            单机内容 = []
-            单机_lines = await extract_download_info(game['url'])
-            if 单机_lines:
-                单机内容.append("【单机版】\n")
-                单机内容.append(f"游戏名字：{chinese_display}\n")   # ← 中文展示名
-                # ② 逐行加 \n 保证密码/链接后都换行
-                for line in 单机_lines:
-                    单机内容.append(f"{line}\n")
-            else:
-                单机内容.append("【单机版】未找到相关资源\n")
+            # 并行处理单机版和联机版资源
+            async def process_single_player():
+                """处理单机版资源"""
+                单机内容 = []
+                单机_lines = await extract_download_info(game['url'])
+                if 单机_lines:
+                    单机内容.append("【单机版】\n")
+                    单机内容.append(f"游戏名字：{chinese_display}\n")   # ← 中文展示名
+                    # 逐行加 \n 保证密码/链接后都换行
+                    for line in 单机_lines:
+                        单机内容.append(f"{line}\n")
+                else:
+                    单机内容.append("【单机版】未找到相关资源\n")
+                return 单机内容
 
-            # 2. Byrut 联机版（用英文关键词搜，展示用完整标题）
-            byrut_results = await search_byrut(english_keyword)   # 搜索仍走英文
-            # 打印搜索到的href到控制台
-            for item in byrut_results:
-                print(f"[Byrut] 找到联机资源: {item['href']}")
-                await fetch_byrut_detail(item)
-            
-            # 3. 联机版内容（中文展示名 + 更新时间 + 种子）
-            联机内容 = []
-            if byrut_results:
+            async def process_multi_player():
+                """处理联机版资源"""
+                # Byrut 联机版（用英文关键词搜，展示用完整标题）
+                byrut_results = await search_byrut(english_keyword)   # 搜索仍走英文
+                # 打印搜索到的href到控制台
                 for item in byrut_results:
-                    联机内容.append("解压密码：online-fix.me\n")
-                    联机内容.append(f"游戏名字：{chinese_display}\n")   # ← 中文展示名
-                    联机内容.append(f"更新时间：{item['update_time']}\n")
-                    联机内容.append(f"种子链接：{item['torrent_url'] or '暂无'}")
-                    # 如果有备用图片，添加图片
-                    if item.get('backup_image'):
-                        联机内容.append(f"备用图片：{item['backup_image']}")
-            else:
-                联机内容.append("【联机版】未找到相关资源")
+                    print(f"[Byrut] 找到联机资源: {item['href']}")
+                    await fetch_byrut_detail(item)
+                
+                # 联机版内容（中文展示名 + 更新时间 + 种子）
+                联机内容 = []
+                if byrut_results:
+                    for item in byrut_results:
+                        联机内容.append("解压密码：online-fix.me\n")
+                        联机内容.append(f"游戏名字：{chinese_display}\n")   # ← 中文展示名
+                        联机内容.append(f"更新时间：{item['update_time']}\n")
+                        联机内容.append(f"种子链接：{item['torrent_url'] or '暂无'}")
+                        # 如果有备用图片，添加图片
+                        if item.get('backup_image'):
+                            联机内容.append(f"备用图片：{item['backup_image']}")
+                else:
+                    联机内容.append("【联机版】未找到相关资源")
+                return 联机内容
+
+            # 并行执行单机版和联机版资源获取
+            单机内容, 联机内容 = await asyncio.gather(
+                process_single_player(),
+                process_multi_player(),
+                return_exceptions=True  # 捕获异常，确保一个任务失败不会影响另一个
+            )
+            
+            # 处理可能的异常
+            if isinstance(单机内容, Exception):
+                print(f"单机版资源获取失败: {单机内容}")
+                单机内容 = ["【单机版】获取资源时出错\n"]
+            
+            if isinstance(联机内容, Exception):
+                print(f"联机版资源获取失败: {联机内容}")
+                联机内容 = ["【联机版】获取资源时出错"]
             
             # 4. 一次性转发
             赞助内容 = ["觉得好用的话可以赞助一下服务器的费用，5毛1快不嫌少，5元10元不嫌多"]
             
-            # 如果**两条都空**，再提示「部分未找到」
+            # 如果两条都空，再提示「部分未找到」
             if not 单机内容 and not 联机内容:
                 await self.api.post_group_msg(
                     group_id=msg.group_id,
@@ -734,6 +837,10 @@ class Xydj(BasePlugin):
             await self.api.post_group_msg(
                 group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"处理失败: {str(e)}")])
             )
+
+    async def process_single_game(self, game, msg):
+        """处理单个游戏的自动转发"""
+        await self.process_game_resource(game, msg)
 
     @bot.group_event
     async def on_group_message(self, msg: GroupMessage):
@@ -762,58 +869,7 @@ class Xydj(BasePlugin):
             self._cleanup()
             try:
                 game = self.filtered_games[choice - 1]
-
-                # --- 关键改动：获取处理后的名字和中文展示名 ---
-                english_keyword, chinese_display = extract_english_name(game['title'])
-                # 打印搜索用的英文名到控制台
-                print(f"[搜索关键词] 中文名: {chinese_display}, 英文名: {english_keyword}")
-
-                # 1. 单机版（用中文展示名）
-                单机内容 = []
-                单机_lines = await extract_download_info(game['url'])
-                if 单机_lines:
-                    单机内容.append("【单机版】")
-                    单机内容.append(f"游戏名字：{chinese_display}")   # ← 中文展示名
-                    # ② 逐行加 \n 保证密码/链接后都换行
-                    for line in 单机_lines:
-                        单机内容.append(f"{line}\n")
-                else:
-                    单机内容.append("【单机版】未找到相关资源\n")
-
-                # 2. Byrut 联机版（用英文关键词搜，展示用完整标题）
-                byrut_results = await search_byrut(english_keyword)   # 搜索仍走英文
-                # 打印搜索到的href到控制台
-                for item in byrut_results:
-                    print(f"[Byrut] 找到联机资源: {item['href']}")
-                    await fetch_byrut_detail(item)
-                
-                # 3. 联机版内容（中文展示名 + 更新时间 + 种子）
-                联机内容 = []
-                if byrut_results:
-                    for item in byrut_results:
-                        联机内容.append("解压密码：online-fix.me")
-                        联机内容.append(f"游戏名字：{chinese_display}")   # ← 中文展示名
-                        联机内容.append(f"更新时间：{item['update_time']}")
-                        联机内容.append(f"种子链接：{item['torrent_url'] or '暂无'}")
-                        # 如果有备用图片，添加图片
-                        if item.get('backup_image'):
-                            联机内容.append(f"备用图片：{item['backup_image']}")
-                else:
-                    联机内容.append("【联机版】未找到相关资源")
-                
-                # 4. 一次性转发
-                赞助内容 = ["觉得好用的话可以赞助一下服务器的费用，5毛1快不嫌少，5元10元不嫌多"]
-                
-                # 如果**两条都空**，再提示「部分未找到」
-                if not 单机内容 and not 联机内容:
-                    await self.api.post_group_msg(
-                        group_id=msg.group_id,
-                        rtf=MessageChain([Reply(msg.message_id), Text("【联机版】未找到任何资源，可能关键词不匹配或服务器异常")])
-                    )
-                    return
-                
-                # 否则「有多少发多少」
-                await send_final_forward(msg.group_id, 赞助内容, 单机内容, 联机内容)
+                await self.process_game_resource(game, msg)
             except Exception as e:
                 await self.api.post_group_msg(
                     group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"处理失败: {str(e)}")])

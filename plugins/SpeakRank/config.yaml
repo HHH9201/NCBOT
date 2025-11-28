@@ -1,0 +1,33 @@
+# SpeakRank插件配置文件
+
+# 插件基本信息
+plugin_name: "SpeakRank"
+plugin_version: "3.0.0"
+
+# 排行榜配置
+max_ranking_size: 10  # 排行榜最大显示数量
+
+# 自动保存配置
+auto_save_interval: 60  # 自动保存间隔（秒）
+save_threshold: 10  # 每达到多少次发言就自动保存
+
+# 每日任务配置
+daily_task:
+  enabled: true  # 是否启用每日0点自动发送昨日排行榜
+  send_time: "00:00"  # 发送时间（24小时制）
+
+# 消息格式配置
+message_format:
+  total_ranking_title: "🏆 总发言排行 🏆"
+  today_ranking_title: "📅 今日发言排行 📅"
+  yesterday_ranking_title: "📊 昨日发言排行 📊"
+  personal_stats_format: "📊 {user_name} 的发言统计\n总发言（{total}）\n昨日发言（{yesterday}）\n今日发言（{today}）"
+
+# 命令配置
+commands:
+  total_ranking: "总发言榜"
+  today_ranking: "今日发言榜"
+  yesterday_ranking: "昨日发言榜"
+  personal_stats: "我的发言"
+  save_data: "保存发言数据"
+  test_yesterday: "测试昨日榜"

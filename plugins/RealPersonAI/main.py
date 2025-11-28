@@ -55,8 +55,8 @@ class RealPersonAI(BasePlugin):
     # 当前使用的人格
     current_personality = None
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, event_bus=None, **kwargs):
+        super().__init__(event_bus=event_bus, **kwargs)
         # 随机选择一个人格
         self.current_personality = random.choice(self.PERSONALITIES)
         _log.info(f"[{self.name}] 当前人格: {self.current_personality[:50]}...")
