@@ -15,12 +15,23 @@ class GPT(BasePlugin):
     BASE_URL = "https://api.siliconflow.cn/v1"
     FALLBACK_API_KEY = API_KEY
     FALLBACK_BASE_URL = BASE_URL
-    SYSTEM = "你是一个智能群助手，全程只使用中文友好、简洁、快速、准确并且喜欢附带颜文字地回答用户的问题。"
+    SYSTEM = "你是一个智能群秘书，全程只使用中文友好、简洁、快速、准确并且高冷简短地回答用户的问题，不许带句号。"
     sessions: Dict[int, List[Dict]] = {}
     cache: Dict[str, str] = {}
     cache_time: Dict[str, float] = {}
     cache_timeout = 300
     bot_qq = "58805194"
+
+    def _strip_at(self, txt: str) -> str:
+        return re.sub(r"\[CQ:at,qq=\d+\]", "", txt).strip()
+
+    def _is_card_query(self, txt: str) -> bool:
+        t = self._strip_at(txt)
+        return (
+            ("流量" in t and "卡" in t) or
+            ("流量卡" in t) or ("号卡" in t) or ("手机卡" in t) or ("上网卡" in t) or ("靓号卡" in t)
+             or ("办卡" in t) or ("正规" in t)
+        )
 
     def trim(self, m: List[Dict]) -> List[Dict]: return m[-20:]
     def _clean_cache(self):
@@ -65,7 +76,13 @@ class GPT(BasePlugin):
         uin = msg.sender.user_id
         self.sessions.setdefault(uin, [])
         try:
-            reply = await self.chat(txt, uin)
+            pure = self._strip_at(txt)
+            if pure.startswith("搜索"):
+                reply = "别@我，直接发就行,可以看看别人怎么操作的！"
+            elif self._is_card_query(pure):
+                reply = "这是下单链接 https://ym.ksjhaoka.com/?s=q9thdGIs326398\n官方正规卡，有问题咨询请扣主人~~"
+            else:
+                reply = await self.chat(pure, uin)
             self.sessions[uin] += [{"role": "user", "content": txt}, {"role": "assistant", "content": reply}]
             self.sessions[uin] = self.trim(self.sessions[uin])
         except Exception as e: reply = f"处理错误: {e}"
@@ -79,7 +96,13 @@ class GPT(BasePlugin):
         uin = msg.sender.user_id
         self.sessions.setdefault(uin, [])
         try:
-            reply = await self.chat(txt, uin)
+            pure = self._strip_at(txt)
+            if pure.startswith("搜索"):
+                reply = "别@我，直接发就行,可以看看别人怎么操作的！"
+            elif self._is_card_query(pure):
+                reply = "这是下单链接 https://ym.ksjhaoka.com/?s=q9thdGIs326398\n官方正规卡，有问题咨询请扣主人~~"
+            else:
+                reply = await self.chat(pure, uin)
             self.sessions[uin] += [{"role": "user", "content": txt}, {"role": "assistant", "content": reply}]
             self.sessions[uin] = self.trim(self.sessions[uin])
         except Exception as e: reply = f"处理错误: {e}"

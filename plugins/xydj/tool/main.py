@@ -179,7 +179,7 @@
 #             login_button.click()
 #             time.sleep(2)
 #             driver.find_element(By.XPATH, "//*[contains(@name,'username')]").send_keys("1783069903@qq.com")
-#             driver.find_element(By.XPATH, "//*[contains(@name,'password')]").send_keys("heh031701")
+#             driver.find_element(By.XPATH, "//*[contains(@name,'password')]").send_keys("hehe031701")
 #             driver.find_element(By.XPATH, "//button[text()='立即登录']").click()
 #             logging.info("执行登录操作")
 #         except TimeoutException:
@@ -252,10 +252,10 @@
 #         return ["无效的序号，请重新选择。"]
 
 # def send_forward_message(group_id, messages, api):
-#     url = "http://192.168.196.88:3006/send_group_forward_msg "
+#     url = "http://101.35.164.122:3006/send_group_forward_msg "
 #     headers = {
 #         'Content-Type': 'application/json',
-#         'Authorization': 'Bearer h031701'
+#         'Authorization': 'Bearer he031701'
 #     }
 
 #     payload_messages = []
@@ -432,10 +432,10 @@
 #                     self.driver.quit()
 
 #     async def send_forward_message(self, group_id, messages):
-#         url = "http://192.168.196.88:3006/send_group_forward_msg"
+#         url = "http://101.35.164.122:3006/send_group_forward_msg"
 #         headers = {
 #             'Content-Type': 'application/json',
-#             'Authorization': 'Bearer h031701'
+#             'Authorization': 'Bearer he031701'
 #         }
 
 #         payload_messages = []

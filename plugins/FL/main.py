@@ -1,5 +1,6 @@
 import httpx
 import logging
+import yaml
 from ncatbot.plugin import BasePlugin, CompatibleEnrollment
 from ncatbot.core import GroupMessage
 
@@ -9,6 +10,22 @@ logging.basicConfig(level=logging.INFO)
 class FL(BasePlugin):
     name = "FL"
     version = "1.0"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.load_config()
+
+    def load_config(self):
+        """加载配置文件"""
+        try:
+            with open("/home/hjh/BOT/NCBOT/config.yaml", "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+            # 使用固定的token，与xydj插件保持一致
+            self.api_token = "he031701"
+            logging.info(f"已加载API令牌: {self.api_token}")
+        except Exception as e:
+            logging.error(f"加载配置文件失败: {e}")
+            self.api_token = "he031701"  # 默认值
 
     # ---------- 关键词映射 ----------
     IMAGE_API = {
@@ -47,10 +64,10 @@ class FL(BasePlugin):
     # ---------- 通用发送 ----------
     async def send_forward(self, group_id: int, url: str,
                            media_type: str, title: str = "合集"):
-        api = "http://192.168.196.88:3006/send_group_forward_msg"
+        api = "http://101.35.164.122:3006/send_group_forward_msg"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": "Bearer h031701"
+            "Authorization": f"Bearer {self.api_token}"
         }
 
         # 构建API关键词信息文本

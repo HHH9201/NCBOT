@@ -33,7 +33,7 @@ bot = CompatibleEnrollment
 
 
 # -------------------- 基础配置 --------------------
-QQ_IMG = "/home/hjh/BOT/NCBOT/plugins/xydj/tool/QQ.png"
+QQ_IMG = "/home/hjh/BOT/NCBOT/plugins/xydj/tool/TG.png"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 COOKIES = {
     "_ok4_": "C2NXbt1hid3Z7pXib67YdB8NzGB5FkiRD3s+ZcGLsnMAg0E0XJLL0YqClny4uYtuJz7E1z5QyCbIu4WnmkUSE8JqDrZmYclPpIIj4RtJsIt8EdH+sR/nnmOS4k0GqmOJ",
@@ -801,7 +801,7 @@ class Xydj(BasePlugin):
                         if item.get('backup_image'):
                             联机内容.append(f"备用图片：{item['backup_image']}")
                 else:
-                    联机内容.append("【联机版】未找到相关资源")
+                    联机内容.append("【联机版】未找到相关资源\n解压密码：online-fix.me\n查看该教程自行查找《搜索和使用联机游戏》https://www.yuque.com/lanmeng-ijygo/ey7ah4/fe9hfep86cw7coku?singleDoc#")
                 return 联机内容
 
             # 并行执行单机版和联机版资源获取
@@ -821,7 +821,7 @@ class Xydj(BasePlugin):
                 联机内容 = ["【联机版】获取资源时出错"]
             
             # 4. 一次性转发
-            赞助内容 = ["觉得好用的话可以赞助一下服务器的费用，5毛1快不嫌少，5元10元不嫌多"]
+            赞助内容 = ["正规流量卡不是物联卡，官方客服可查套餐，官方APP可自己查余额\n有问题请扣主人~~：\nhttps://ym.ksjhaoka.com/?s=q9thdGIs326398"]
             
             # 如果两条都空，再提示「部分未找到」
             if not 单机内容 and not 联机内容:
