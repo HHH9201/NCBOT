@@ -22,6 +22,9 @@ from ncatbot.plugin import BasePlugin, CompatibleEnrollment
 from ncatbot.core.message import GroupMessage
 from ncatbot.core import Text, At, Reply, MessageChain, Image
 
+# 配置更清爽的日志格式，去掉进程和线程信息
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+
 # API配置
 API_URL = "https://api.siliconflow.cn/v1/chat/completions"
 API_HEADERS = {
@@ -42,8 +45,8 @@ COOKIES = {
     "wordpress_test_cookie": "WP%20Cookie%20check",
     "wordpress_logged_in_c1baf48ff9d49282e5cd4050fece6d34": "HHH9201%7C1765536473%7C3CP18asLM5a8tSvH8bXM3u0XZig4oO3kVjzJnlMuF2J%7Ca7ab2190b8723aac448e520abe3bf93fea488edd127a4e291b891e697e74918f"
 }
-PROXY = "http://127.0.0.1:7890"
-BYRUT_BASE = "https://napcat.1783069903.workers.dev/"
+PROXY = "http://127.0.0.1:7899"
+BYRUT_BASE = "https://napcat.1783069903.workers.dev"
 session = requests.Session()
 session.headers.update(HEADERS)
 session.proxies.update({"http": PROXY, "https": PROXY})
@@ -350,12 +353,22 @@ if PROXY and not PROXY.startswith(('http://', 'https://', 'socks4://', 'socks5:/
     PROXY = None  # 禁用可能有问题的代理
 
 # 增强的请求头配置（移除Brotli支持以避免解码错误）
+# 添加更完整的请求头以模拟真实浏览器，避免403错误
 HEADERS.update({
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
     'Accept-Encoding': 'gzip, deflate',  # 移除br(brotli)支持
     'Cache-Control': 'no-cache',
-    'Pragma': 'no-cache'
+    'Pragma': 'no-cache',
+    'Referer': BYRUT_BASE,  # 添加Referer头
+    'Origin': BYRUT_BASE,  # 添加Origin头
+    'DNT': '1',  # 不追踪请求
+    'Connection': 'keep-alive',  # 保持连接
+    'Upgrade-Insecure-Requests': '1',  # 升级不安全请求
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-User': '?1'
 })
 
 # -------------------- ByrutGame 搜索（异步+代理+SSL 关闭） ----------
@@ -370,27 +383,73 @@ async def search_byrut(name: str) -> list:
     text = None  # 用于存储成功获取的文本
     
     for attempt in range(max_retries):
-        connector = aiohttp.TCPConnector(ssl=False)
-        timeout = aiohttp.ClientTimeout(total=30)
+        connector = aiohttp.TCPConnector(ssl=False, force_close=True)
+        timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_connect=10, sock_read=10)
         session = None
         
         try:
             # 每次重试都创建全新的session和connector，避免session closed问题
-            session = aiohttp.ClientSession(connector=connector, timeout=timeout, headers=HEADERS)
+            # 为了避免403，我们传递一个空的cookies字典，让服务器认为我们接受cookies
+            session = aiohttp.ClientSession(
+                connector=connector, 
+                timeout=timeout, 
+                headers=HEADERS,
+                cookies={}  # 添加空cookies，避免服务器拒绝无cookies请求
+            )
             
             # 构建请求参数
             request_params = {"params": params, "timeout": timeout}
             if PROXY:
                 request_params["proxy"] = PROXY
             
+            # 打印调试日志
+            full_url = f"{url}?{ '&'.join([f'{k}={v}' for k, v in params.items()]) }"
+            logging.debug(f"[Byrut] 发送请求：{full_url}")
+            logging.debug(f"[Byrut] 请求headers：{HEADERS}")
+            logging.debug(f"[Byrut] 请求proxy：{PROXY}")
+            
             async with session.get(url, **request_params) as resp:
-                if resp.status != 200:
+                # 打印响应日志
+                logging.debug(f"[Byrut] 响应状态码：{resp.status}")
+                logging.debug(f"[Byrut] 响应headers：{dict(resp.headers)}")
+                
+                if resp.status == 403:
+                    logging.warning(f"[Byrut] 403 Forbidden (尝试 {attempt + 1}/{max_retries})")
+                    # 尝试获取错误响应内容，分析403原因
+                    error_content = await resp.text()
+                    logging.debug(f"[Byrut] 403错误响应内容：{error_content[:500]}...")
+                    
+                    # 403时尝试更换User-Agent
+                    if attempt < max_retries - 1:
+                        # 轮换User-Agent
+                        import random
+                        user_agents = [
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/121.0",
+                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
+                        ]
+                        # 创建临时headers副本，轮换User-Agent
+                        temp_headers = HEADERS.copy()
+                        temp_headers['User-Agent'] = random.choice(user_agents)
+                        session.headers.update(temp_headers)
+                        logging.debug(f"[Byrut] 尝试更换User-Agent: {temp_headers['User-Agent']}")
+                        
+                        await asyncio.sleep(retry_delay * (attempt + 1))  # 指数退避
+                        continue
+                    return []          # 空 = 未找到
+                elif resp.status != 200:
                     logging.warning(f"[Byrut] 反代返回状态码：{resp.status} (尝试 {attempt + 1}/{max_retries})")
+                    # 尝试获取错误响应内容
+                    error_content = await resp.text()
+                    logging.debug(f"[Byrut] 错误响应内容：{error_content[:500]}...")
                     if attempt < max_retries - 1:
                         await asyncio.sleep(retry_delay)
                         continue
                     return []          # 空 = 未找到
                 text = await resp.text()
+                logging.debug(f"[Byrut] 成功获取响应，长度：{len(text)} 字符")
                 break  # 成功获取数据，跳出重试循环
                 
         except aiohttp.ClientConnectorError as e:
@@ -486,22 +545,68 @@ async def fetch_byrut_detail(item: dict) -> None:
     html = None
     
     for attempt in range(max_retries):
-        connector = aiohttp.TCPConnector(ssl=False)
-        timeout = aiohttp.ClientTimeout(total=30)
+        connector = aiohttp.TCPConnector(ssl=False, force_close=True)
+        timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_connect=10, sock_read=10)
         session = None
         
         try:
             # 每次重试都创建全新的session和connector
-            session = aiohttp.ClientSession(connector=connector, timeout=timeout, headers=HEADERS)
+            # 为了避免403，我们传递一个空的cookies字典，让服务器认为我们接受cookies
+            session = aiohttp.ClientSession(
+                connector=connector, 
+                timeout=timeout, 
+                headers=HEADERS,
+                cookies={}  # 添加空cookies，避免服务器拒绝无cookies请求
+            )
             
             # 构建请求参数
             request_params = {"timeout": timeout}
             if PROXY:
                 request_params["proxy"] = PROXY
             
+            # 打印调试日志
+            logging.debug(f"[Byrut] 发送详情页请求：{proxy_url}")
+            logging.debug(f"[Byrut] 请求headers：{HEADERS}")
+            logging.debug(f"[Byrut] 请求proxy：{PROXY}")
+            
             async with session.get(proxy_url, **request_params) as resp:
-                if resp.status != 200:
+                # 打印响应日志
+                logging.debug(f"[Byrut] 详情页响应状态码：{resp.status}")
+                logging.debug(f"[Byrut] 详情页响应headers：{dict(resp.headers)}")
+                
+                if resp.status == 403:
+                    logging.warning(f"[Byrut] 详情页403 Forbidden (尝试 {attempt + 1}/{max_retries})")
+                    # 尝试获取错误响应内容，分析403原因
+                    error_content = await resp.text()
+                    logging.debug(f"[Byrut] 详情页403错误响应内容：{error_content[:500]}...")
+                    
+                    # 403时尝试更换User-Agent
+                    if attempt < max_retries - 1:
+                        # 轮换User-Agent
+                        import random
+                        user_agents = [
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/121.0",
+                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
+                        ]
+                        # 创建临时headers副本，轮换User-Agent
+                        temp_headers = HEADERS.copy()
+                        temp_headers['User-Agent'] = random.choice(user_agents)
+                        session.headers.update(temp_headers)
+                        logging.debug(f"[Byrut] 尝试更换User-Agent: {temp_headers['User-Agent']}")
+                        
+                        await asyncio.sleep(retry_delay * (attempt + 1))  # 指数退避
+                        continue
+                    # 最后一次尝试失败，使用备用方案
+                    _apply_backup_solution(item, "HTTP 403 Forbidden错误")
+                    return
+                elif resp.status != 200:
                     logging.warning(f"[Byrut] 详情页状态码：{resp.status} (尝试 {attempt + 1}/{max_retries})")
+                    # 尝试获取错误响应内容
+                    error_content = await resp.text()
+                    logging.debug(f"[Byrut] 详情页错误响应内容：{error_content[:500]}...")
                     if attempt < max_retries - 1:
                         await asyncio.sleep(retry_delay)
                         continue
@@ -509,6 +614,7 @@ async def fetch_byrut_detail(item: dict) -> None:
                     _apply_backup_solution(item, "HTTP状态码错误")
                     return
                 html = await resp.text()
+                logging.debug(f"[Byrut] 成功获取详情页响应，长度：{len(html)} 字符")
                 break  # 成功获取数据，跳出重试循环
                 
         except aiohttp.ClientConnectorError as e:

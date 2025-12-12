@@ -15,7 +15,8 @@ import asyncio
 import requests
 import json
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+# 使用更清爽的日志格式，去掉进程和线程信息
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
 def get_text_size(font, text):
     lines = text.split('\n')
