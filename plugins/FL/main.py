@@ -63,7 +63,8 @@ class FL(BasePlugin):
 
     # ---------- 通用发送 ----------
     async def send_forward(self, group_id: int, url: str,
-                           media_type: str, title: str = "合集"):
+                           media_type: str, title: str = "合集",
+                           user_id: str = "80000000", nickname: str = "匿名用户"):
         api = "http://101.35.164.122:3006/send_group_forward_msg"
         headers = {
             "Content-Type": "application/json",
@@ -84,8 +85,8 @@ class FL(BasePlugin):
         nodes.append({
             "type": "node",
             "data": {
-                "user_id": 80000000,
-                "nickname": "关键词列表",
+                "user_id": user_id,
+                "nickname": nickname,
                 "content": [
                     {"type": "text", "data": {"text": api_info}}
                 ]
@@ -111,8 +112,8 @@ class FL(BasePlugin):
                 nodes.append({
                     "type": "node",
                     "data": {
-                        "user_id": 80000000,
-                        "nickname": "匿名用户",
+                        "user_id": user_id,
+                        "nickname": nickname,
                         "content": [
                             {
                                 "type": "video",
@@ -134,8 +135,8 @@ class FL(BasePlugin):
                 nodes.append({
                     "type": "node",
                     "data": {
-                        "user_id": 80000000,
-                        "nickname": "匿名用户",
+                        "user_id": user_id,
+                        "nickname": nickname,
                         "content": [
                             {"type": "image", "data": {"url": url}}
                         ]
@@ -171,6 +172,8 @@ class FL(BasePlugin):
         text = msg.raw_message.strip()
 
         if text in self.IMAGE_API:
-            await self.send_forward(msg.group_id, self.IMAGE_API[text], "image", f"{text} 图片合集")
+            await self.send_forward(msg.group_id, self.IMAGE_API[text], "image", f"{text} 图片合集",
+                                   str(msg.user_id), msg.sender.nickname)
         elif text in self.VIDEO_API:
-            await self.send_forward(msg.group_id, self.VIDEO_API[text], "video", f"{text} 视频合集")
+            await self.send_forward(msg.group_id, self.VIDEO_API[text], "video", f"{text} 视频合集",
+                                   str(msg.user_id), msg.sender.nickname)

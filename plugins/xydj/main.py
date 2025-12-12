@@ -212,6 +212,9 @@ async def search_game(game_name: str):
     
     # 直接返回文本格式的游戏列表，不生成图片
     text_lines = []
+    text_lines.append("🎮 游戏搜索结果 🎮")
+    text_lines.append("═" * 35)
+    
     for idx, g in enumerate(games):
         # 提取游戏名和版本信息
         title_parts = g['title'].split('|')
@@ -221,19 +224,19 @@ async def search_game(game_name: str):
         key_info = []
         for part in title_parts[1:]:
             part = part.strip()
-            if any(keyword in part.lower() for keyword in ['v', '版', 'dlc', '中文', '手柄']):
+            if any(keyword in part.lower() for keyword in ['v', '版', 'dlc', '中文', '手柄', '更新', '年度版']):
                 key_info.append(part)
         
-        # 构建简洁的横线分隔格式
-        display_text = f"{idx+1}. {game_name}"
+        # 构建美观的格式
+        display_text = f"🔹 {idx+1}. {game_name}"
         if key_info:
-            display_text += f"|{'|'.join(key_info[:4])}|"  # 最多显示4个关键信息
+            display_text += f" | {' | '.join(key_info[:3])}"
         
         text_lines.append(display_text)
-        text_lines.append("════════════")  # 添加分隔线
+        text_lines.append("-" * 35)
     
     # 移除最后一个多余的分隔线
-    if text_lines:
+    if text_lines and text_lines[-1] == "-" * 35:
         text_lines.pop()
     
     text_result = "\n".join(text_lines)
@@ -263,11 +266,11 @@ async def extract_download_info(game_url: str):
             link_text = adjacent_link.get_text(strip=True) if adjacent_link else ""
             
             if ('解压密码' in btn_text or '解压密码' in link_text):
-                clipboard_text = btn.get('data-clipboard-text', '').strip()
-                if clipboard_text:  # 确保密码不为空
-                    results.append(f"解压密码: {clipboard_text}")
-                    password_found = True
-                    break
+                        clipboard_text = btn.get('data-clipboard-text', '').strip()
+                        if clipboard_text:  # 确保密码不为空
+                            results.append(f"解压密码: 【{clipboard_text}】")
+                            password_found = True
+                            break
         
         # 方法2: 从down-info区域提取解压密码（第二种格式）
         if not password_found:
@@ -293,7 +296,7 @@ async def extract_download_info(game_url: str):
                             
                             # 验证密码格式并添加到结果
                             if password and password != "解压密码=安装密码、激活码":  # 排除说明文字
-                                results.append(f"解压密码: {password}")
+                                results.append(f"解压密码: 【{password}】")
                                 password_found = True
                                 break
         
@@ -307,12 +310,12 @@ async def extract_download_info(game_url: str):
                 
                 # 判断是否为有效密码格式
                 if (clipboard_text and 
-                    len(clipboard_text) >= 4 and 
-                    not any(keyword in clipboard_text for keyword in ['百度', '网盘', '提取', 'https', 'http']) and
-                    ('密码' in element_text or '解压' in element_text)):
-                    results.append(f"解压密码: {clipboard_text}")
-                    password_found = True
-                    break
+                        len(clipboard_text) >= 4 and 
+                        not any(keyword in clipboard_text for keyword in ['百度', '网盘', '提取', 'https', 'http']) and
+                        ('密码' in element_text or '解压' in element_text)):
+                        results.append(f"解压密码: 【{clipboard_text}】")
+                        password_found = True
+                        break
         
         # 如果所有方法都失败了
         if not password_found:
@@ -462,6 +465,12 @@ async def search_byrut(name: str) -> list:
             return []
         except asyncio.TimeoutError as e:
             logging.error(f"[Byrut] 请求超时 (尝试 {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay)
+                continue
+            return []
+        except aiohttp.ClientPayloadError as e:
+            logging.error(f"[Byrut] 数据传输错误 (尝试 {attempt + 1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
                 await asyncio.sleep(retry_delay)
                 continue
@@ -639,6 +648,13 @@ async def fetch_byrut_detail(item: dict) -> None:
                 continue
             _apply_backup_solution(item, "请求超时")
             return
+        except aiohttp.ClientPayloadError as e:
+            logging.error(f"[Byrut] 详情页数据传输错误 (尝试 {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay)
+                continue
+            _apply_backup_solution(item, "数据传输错误")
+            return
         except Exception as e:
             logging.exception(f"[Byrut] 详情页请求失败 (尝试 {attempt + 1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
@@ -719,7 +735,7 @@ def image_to_base64(image_path):
         logging.error(f"图片转base64失败: {e}")
         return None
 
-async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: list[str], 联机_lines: list[str]):
+async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: list[str], 联机_lines: list[str], user_id: str = "0", user_nickname: str = "游戏助手"):
     """一次性构造：赞助 + 单机版 + 联机版（节点内不再写游戏名）"""
     nodes = []
 
@@ -733,11 +749,26 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
     if qq_img_base64:
         sponsor_content.append({"type": "image", "data": {"file": qq_img_base64}})
     
+    # 从消息中提取游戏名称，用于标题和摘要
+    game_title = ""
+    for line in 单机_lines:
+        if "游戏名字" in line:
+            game_title = line.split("游戏名字：")[1].strip()
+            break
+    if not game_title:
+        for line in 联机_lines:
+            if "游戏名字" in line:
+                game_title = line.split("游戏名字：")[1].strip()
+                break
+    if not game_title:
+        game_title = "游戏资源"
+
+    # 1. 赞助节点
     nodes.append({
         "type": "node",
         "data": {
-            "uin": "0",
-            "nickname": "",
+            "uin": user_id,
+            "nickname": user_nickname,
             "content": sponsor_content
         }
     })
@@ -747,21 +778,17 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
     nodes.append({
         "type": "node",
         "data": {
-            "uin": "0",
-            "nickname": "",
+            "uin": user_id,
+            "nickname": user_nickname,
             "content": 单机_nodes
         }
     })
 
-    # 3. 联机版节点（带中文游戏名 + 更新时间）
-    联机_nodes = [{"type": "text", "data": {"text": "【联机版】\n"}}]
-    # ① 先放中文游戏名 + 更新时间（仅联机版）
+    # 3. 联机版节点（直接使用处理好的内容，不再重复添加标题）
+    联机_nodes = []
+    # 直接追加处理好的内容
     if 联机_lines:
-        联机_nodes.append({"type": "text", "data": {"text": f"{联机_lines[0]}\n"}})   # 第一行就是游戏名
-        if len(联机_lines) > 1:
-            联机_nodes.append({"type": "text", "data": {"text": f"{联机_lines[1]}\n"}})  # 第二行就是更新时间
-        # ② 其余内容原样追加
-        联机_nodes.extend([{"type": "text", "data": {"text": line}} for line in 联机_lines[2:]])
+        联机_nodes.extend([{"type": "text", "data": {"text": line}} for line in 联机_lines])
         
         # ③ 检查是否有备用图片需要添加
         for line in 联机_lines:
@@ -783,8 +810,8 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
     nodes.append({
         "type": "node",
         "data": {
-            "uin": "0",
-            "nickname": "",
+            "uin": user_id,
+            "nickname": user_nickname,
             "content": 联机_nodes
         }
     })
@@ -792,7 +819,26 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
     # 4. 一次性发出
     url = "http://101.35.164.122:3006/send_group_forward_msg"
     headers = {'Content-Type': 'application/json', 'Authorization': 'Bearer he031701'}
-    payload = {"group_id": group_id, "messages": nodes}
+    
+    # 计算资源数量
+    single_count = len([line for line in 单机_lines if "链接" in line])
+    multi_count = len([line for line in 联机_lines if "种子链接" in line])
+    total_count = single_count + multi_count
+    
+    summary = f"共找到 {total_count} 个资源链接"
+    if single_count > 0:
+        summary += f" (单机: {single_count} 个)"
+    if multi_count > 0:
+        summary += f" (联机: {multi_count} 个)"
+    
+    payload = {
+        "group_id": group_id,
+        "messages": nodes,
+        "source": game_title,
+        "summary": summary,
+        "prompt": f"[{game_title}]",
+        "news": [{"text": "点击查看游戏资源详情"}]
+    }
 
     # 5. 增强错误处理和网络容错
     max_retries = 3
@@ -884,13 +930,23 @@ class Xydj(BasePlugin):
                 单机内容 = []
                 单机_lines = await extract_download_info(game['url'])
                 if 单机_lines:
-                    单机内容.append("【单机版】\n")
-                    单机内容.append(f"游戏名字：{chinese_display}\n")   # ← 中文展示名
+                    单机内容.append("🎮 【单机版】\n")
+                    单机内容.append(f"📌 游戏名字：{chinese_display}\n")   # ← 中文展示名
+                    单机内容.append("═" * 30 + "\n")
                     # 逐行加 \n 保证密码/链接后都换行
                     for line in 单机_lines:
-                        单机内容.append(f"{line}\n")
+                        if "解压密码" in line:
+                            单机内容.append(f"🔑 {line}\n")
+                        elif "百度网盘" in line:
+                            单机内容.append(f"💾 {line}\n")
+                        elif "链接" in line:
+                            单机内容.append(f"🌐 {line}\n")
+                        else:
+                            单机内容.append(f"📋 {line}\n")
+                    单机内容.append("═" * 30 + "\n")
                 else:
-                    单机内容.append("【单机版】未找到相关资源\n")
+                    单机内容.append("🎮 【单机版】\n")
+                    单机内容.append("❌ 未找到相关资源\n")
                 return 单机内容
 
             async def process_multi_player():
@@ -905,16 +961,35 @@ class Xydj(BasePlugin):
                 # 联机版内容（中文展示名 + 更新时间 + 种子）
                 联机内容 = []
                 if byrut_results:
-                    for item in byrut_results:
-                        联机内容.append("解压密码：online-fix.me\n")
-                        联机内容.append(f"游戏名字：{chinese_display}\n")   # ← 中文展示名
-                        联机内容.append(f"更新时间：{item['update_time']}\n")
-                        联机内容.append(f"种子链接：{item['torrent_url'] or '暂无'}")
-                        # 如果有备用图片，添加图片
+                    联机内容.append("🎮 【联机版】\n")
+                    联机内容.append(f"📌 游戏名字：{chinese_display}\n")   # ← 中文展示名
+                    联机内容.append("═" * 30 + "\n")
+                    
+                    for idx, item in enumerate(byrut_results, 1):
+                        if len(byrut_results) > 1:
+                            联机内容.append(f"\n{idx}. 资源 {idx}\n")
+                            联机内容.append("-" * 25 + "\n")
+                        
+                        联机内容.append(f"🔑 解压密码：【online-fix.me】\n")
+                        联机内容.append(f"⏰ 更新时间：{item['update_time']}\n")
+                        
+                        if item.get('torrent_url'):
+                            联机内容.append(f"🌐 种子链接：{item['torrent_url']}\n")
+                        else:
+                            联机内容.append(f"❌ 种子链接：暂无\n")
+                        
+                        # 如果有备用图片，添加图片标记
                         if item.get('backup_image'):
-                            联机内容.append(f"备用图片：{item['backup_image']}")
+                            联机内容.append(f"🖼️ 备用图片：{item['backup_image']}\n")
+                    
+                    联机内容.append("═" * 30 + "\n")
+                    联机内容.append("💡 使用提示：下载种子后使用BT客户端打开即可\n")
                 else:
-                    联机内容.append("【联机版】未找到相关资源\n解压密码：online-fix.me\n查看该教程自行查找《搜索和使用联机游戏》https://www.yuque.com/lanmeng-ijygo/ey7ah4/fe9hfep86cw7coku?singleDoc#")
+                    联机内容.append("🎮 【联机版】\n")
+                    联机内容.append("❌ 未找到相关资源\n")
+                    联机内容.append("🔑 通用解压密码：【online-fix.me】\n")
+                    联机内容.append("📚 查看教程：《搜索和使用联机游戏》\n")
+                    联机内容.append("🌐 https://www.yuque.com/lanmeng-ijygo/ey7ah4/fe9hfep86cw7coku?singleDoc#\n")
                 return 联机内容
 
             # 并行执行单机版和联机版资源获取
@@ -945,7 +1020,7 @@ class Xydj(BasePlugin):
                 return
             
             # 否则「有多少发多少」
-            await send_final_forward(msg.group_id, 赞助内容, 单机内容, 联机内容)
+            await send_final_forward(msg.group_id, 赞助内容, 单机内容, 联机内容, str(msg.user_id), msg.sender.nickname)
         except Exception as e:
             await self.api.post_group_msg(
                 group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"处理失败: {str(e)}")])
@@ -1015,7 +1090,7 @@ class Xydj(BasePlugin):
                 
                 # 多个游戏结果，需要用户选择（直接发送文本，不发送图片）
                 await self.api.post_group_msg(
-                    group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"🎯 发现 {len(games)} 款游戏\n════════════\n{text_result}\n════════════\n⏰ 30秒内回复序号选择 | 回复 0 取消操作")])
+                    group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"🎯 发现 {len(games)} 款游戏\n════════\n{text_result}\n════\n⏰ 30秒内回复序号选择 | 回复 0 取消操作")])
                 )
                 self.waiting_for_reply = True
                 self.user_who_sent_command = msg.user_id
