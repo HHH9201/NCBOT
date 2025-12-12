@@ -534,10 +534,17 @@ def _apply_backup_solution(item: dict, error_type: str) -> None:
 
 # -------------------- ByrutGame 详情（异步+代理+SSL 关闭） ----------
 async def fetch_byrut_detail(item: dict) -> None:
-    detail_path = item["href"].replace("https://byrutgame.org", "")
-    if not detail_path.startswith("/"):
-        detail_path = "/" + detail_path
-    proxy_url = f"{BYRUT_BASE}{detail_path}"
+    href = item["href"]
+    # 检查是否已经是代理链接
+    if href.startswith(BYRUT_BASE):
+        # 已经是代理链接，直接使用
+        proxy_url = href
+    else:
+        # 不是代理链接，转换为代理链接
+        detail_path = href.replace("https://byrutgame.org", "")
+        if not detail_path.startswith("/"):
+            detail_path = "/" + detail_path
+        proxy_url = f"{BYRUT_BASE}{detail_path}"
     
     # 重试机制配置
     max_retries = 3
