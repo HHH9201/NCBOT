@@ -43,7 +43,7 @@ COOKIES = {
     "wordpress_logged_in_c1baf48ff9d49282e5cd4050fece6d34": "HHH9201%7C1765536473%7C3CP18asLM5a8tSvH8bXM3u0XZig4oO3kVjzJnlMuF2J%7Ca7ab2190b8723aac448e520abe3bf93fea488edd127a4e291b891e697e74918f"
 }
 PROXY = "http://127.0.0.1:7890"
-BYRUT_BASE = "https://byrut-worker.1783069903.workers.dev"
+BYRUT_BASE = "https://napcat.1783069903.workers.dev/"
 session = requests.Session()
 session.headers.update(HEADERS)
 session.proxies.update({"http": PROXY, "https": PROXY})
