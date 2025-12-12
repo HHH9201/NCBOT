@@ -212,8 +212,6 @@ async def search_game(game_name: str):
     
     # 直接返回文本格式的游戏列表，不生成图片
     text_lines = []
-    text_lines.append("🎮 游戏搜索结果 🎮")
-    text_lines.append("═" * 35)
     
     for idx, g in enumerate(games):
         # 提取游戏名和版本信息
@@ -233,11 +231,6 @@ async def search_game(game_name: str):
             display_text += f" | {' | '.join(key_info[:3])}"
         
         text_lines.append(display_text)
-        text_lines.append("-" * 35)
-    
-    # 移除最后一个多余的分隔线
-    if text_lines and text_lines[-1] == "-" * 35:
-        text_lines.pop()
     
     text_result = "\n".join(text_lines)
     
@@ -932,7 +925,6 @@ class Xydj(BasePlugin):
                 if 单机_lines:
                     单机内容.append("🎮 【单机版】\n")
                     单机内容.append(f"📌 游戏名字：{chinese_display}\n")   # ← 中文展示名
-                    单机内容.append("═" * 30 + "\n")
                     # 逐行加 \n 保证密码/链接后都换行
                     for line in 单机_lines:
                         if "解压密码" in line:
@@ -943,7 +935,6 @@ class Xydj(BasePlugin):
                             单机内容.append(f"🌐 {line}\n")
                         else:
                             单机内容.append(f"📋 {line}\n")
-                    单机内容.append("═" * 30 + "\n")
                 else:
                     单机内容.append("🎮 【单机版】\n")
                     单机内容.append("❌ 未找到相关资源\n")
@@ -963,12 +954,10 @@ class Xydj(BasePlugin):
                 if byrut_results:
                     联机内容.append("🎮 【联机版】\n")
                     联机内容.append(f"📌 游戏名字：{chinese_display}\n")   # ← 中文展示名
-                    联机内容.append("═" * 30 + "\n")
                     
                     for idx, item in enumerate(byrut_results, 1):
                         if len(byrut_results) > 1:
                             联机内容.append(f"\n{idx}. 资源 {idx}\n")
-                            联机内容.append("-" * 25 + "\n")
                         
                         联机内容.append(f"🔑 解压密码：【online-fix.me】\n")
                         联机内容.append(f"⏰ 更新时间：{item['update_time']}\n")
@@ -982,7 +971,6 @@ class Xydj(BasePlugin):
                         if item.get('backup_image'):
                             联机内容.append(f"🖼️ 备用图片：{item['backup_image']}\n")
                     
-                    联机内容.append("═" * 30 + "\n")
                     联机内容.append("💡 使用提示：下载种子后使用BT客户端打开即可\n")
                 else:
                     联机内容.append("🎮 【联机版】\n")
@@ -1090,7 +1078,7 @@ class Xydj(BasePlugin):
                 
                 # 多个游戏结果，需要用户选择（直接发送文本，不发送图片）
                 await self.api.post_group_msg(
-                    group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"🎯 发现 {len(games)} 款游戏\n════════\n{text_result}\n════\n⏰ 30秒内回复序号选择 | 回复 0 取消操作")])
+                    group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"🎯 发现 {len(games)} 款游戏\n{text_result}\n⏰ 30秒内回复序号选择 | 回复 0 取消操作")])
                 )
                 self.waiting_for_reply = True
                 self.user_who_sent_command = msg.user_id
