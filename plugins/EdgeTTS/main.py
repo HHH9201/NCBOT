@@ -39,7 +39,7 @@ class EdgeTTS(BasePlugin):
             
             # 🌞 核心调教：rate="+12%"
             # 这个参数是“阳光感”的来源，语速稍快一点，听起来像在开心聊天
-            communicate = edge_tts.Communicate(text, self.VOICE, rate="+12%")
+            communicate = edge_tts.Communicate(text, self.VOICE, rate="+1%")
             
             await communicate.save(str(temp_file))
             return temp_file
