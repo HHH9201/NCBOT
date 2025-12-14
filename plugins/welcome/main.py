@@ -89,7 +89,7 @@ class Welcome(BasePlugin):
                 self.leave_records = {str(uid): self._norm(rec) for uid, rec in raw.items()}
         else:
             self.leave_records = {}
-        logger.info("[Welcome] 已加载 %d 条退群记录", len(self.leave_records))
+        logger.debug("[Welcome] 已加载 %d 条退群记录", len(self.leave_records))
 
     def _norm(self, rec):
         if isinstance(rec, int):

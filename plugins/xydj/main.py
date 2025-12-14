@@ -23,7 +23,6 @@ from ncatbot.core.message import GroupMessage
 from ncatbot.core import Text, At, Reply, MessageChain, Image
 
 # 配置更清爽的日志格式，去掉进程和线程信息
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
 # API配置
 API_URL = "https://api.siliconflow.cn/v1/chat/completions"
@@ -39,11 +38,11 @@ bot = CompatibleEnrollment
 QQ_IMG = "/home/hjh/BOT/NCBOT/plugins/xydj/tool/TG.png"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 COOKIES = {
-    "_ok4_": "C2NXbt1hid3Z7pXib67YdB8NzGB5FkiRD3s+ZcGLsnMAg0E0XJLL0YqClny4uYtuJz7E1z5QyCbIu4WnmkUSE8JqDrZmYclPpIIj4RtJsIt8EdH+sR/nnmOS4k0GqmOJ",
+    "_ok4_": "k7Ss53TvUyeXcsWfWBuG3EDFCuhFBobWvQAsWPR4u7n/Fx1oJgJ582qBY9G6J2s2mjP6qe3nvbV2HpnvLzDf8bo1kDTJie9uhaXfKSSh1qmvZC0OvV41h5ex++Iw3moO",
     "ripro_notice_cookie": "1",
-    "PHPSESSID": "mi5ibvak6oi5sin4stq86si8i1",
-    "wordpress_test_cookie": "WP%20Cookie%20check",
-    "wordpress_logged_in_c1baf48ff9d49282e5cd4050fece6d34": "HHH9201%7C1765536473%7C3CP18asLM5a8tSvH8bXM3u0XZig4oO3kVjzJnlMuF2J%7Ca7ab2190b8723aac448e520abe3bf93fea488edd127a4e291b891e697e74918f"
+    "TDC_itoken": "619377261%3A1765550565",
+    "PHPSESSID": "10ul6aj41hfuguh3j71fvvn4g4",
+    "wordpress_logged_in_c1baf48ff9d49282e5cd4050fece6d34": "HHH9201%7C1766760171%7C5mAlNcIYZrvtS4Cxg5ckAeyivEqEGcYux4YtHtolbnS%7Cb012109b8803e7f36bc7bd9cf4f0a475a7dd72465b8f78c60e7c228c698f3316"
 }
 PROXY = "http://127.0.0.1:7899"
 BYRUT_BASE = "https://napcat.1783069903.workers.dev"

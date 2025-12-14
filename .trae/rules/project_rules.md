@@ -38,3 +38,8 @@
     ```python
     {"group_id": group_id, "messages": nodes}
     ```
+
+## 5. 禁止安装pip包
+- **[强制]** 严禁在插件开发过程中使用 `pip install` 安装任何第三方库。
+- **[强制]** 安装依赖只在source ~/.ncatbot/bin/activate  中虚拟环境(.ncatbot) hjh@VM-0-13-ubuntu:~/BOT/NCBOT$ 中进行。
+- **[强制]** 启动测试命令python main.py之后，运行成功，立即退出，不要保留，只保留一个。(TraeAI-9)终端即可

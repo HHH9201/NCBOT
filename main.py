@@ -1,52 +1,81 @@
 
 
-# ========= 设置日志环境变量 ==========
 import os
 import logging
-# 设置终端日志级别为DEBUG，确保能看到所有日志
-os.environ["LOG_LEVEL"] = "DEBUG"
-# 设置文件日志级别为DEBUG
-os.environ["FILE_LOG_LEVEL"] = "DEBUG"
-# 设置自定义日志格式，保留颜色支持，显示详细日志信息
-os.environ["LOG_FORMAT"] = "\033[36m[%(asctime)s.%(msecs)03d]\033[0m \033[32m%(levelname)-8s\033[0m \033[35m%(name)s\033[0m \033[33m%(filename)s:%(lineno)d\033[0m ➜ %(message)s"
-
-
-# ========= 自定义日志过滤器 ==========
-class QQFilter(logging.Filter):
-    def __init__(self, allowed_qqs=None, allowed_groups=None):
-        super().__init__()
-        self.allowed_qqs = set(allowed_qqs) if allowed_qqs else set()
-        self.allowed_groups = set(allowed_groups) if allowed_groups else set()
-    
-    def filter(self, record):
-        # 获取日志消息
-        msg = record.getMessage()
-        
-        # 过滤掉特定的日志消息
-        if "命令前缀集合" in msg:
-            return False
-        if "用户发言达" in msg and "自动保存" in msg:
-            return False
-        if "SpeakRank" in record.name:
-            return False
-        
-        # 允许所有其他日志
-        return True
-
+import re
 
 # ========= 导入必要模块 ==========
 from ncatbot.core import BotClient, GroupMessage, PrivateMessage
-from ncatbot.utils import get_log
-
-
 
 # ========== 创建 BotClient ==========
 bot = BotClient()
-_log = get_log()
+
+# ========== 配置日志等级 ==========
+# 设置环境变量来配置日志等级
+os.environ['LOG_LEVEL'] = 'DEBUG'
+os.environ['FILE_LOG_LEVEL'] = 'DEBUG'
+
+# 目标群组ID
+TARGET_GROUP_ID = "695934967"
+
+# 自定义日志过滤器 - 过滤掉其他群组的日志和框架噪音
+class GroupLogFilter(logging.Filter):
+    def filter(self, record):
+        # 检查日志消息是否包含群组信息
+        log_message = record.getMessage()
+        
+        # 如果日志包含群组ID，检查是否是目标群组
+        if "group_id" in log_message.lower():
+            # 使用正则表达式提取群组ID
+            group_match = re.search(r"group_id['\"]?\s*[:=]\s*(\d+)", log_message)
+            if group_match:
+                group_id = group_match.group(1)
+                # 只记录目标群组的日志
+                return group_id == TARGET_GROUP_ID
+        
+        # 过滤掉框架级别的噪音日志
+        noise_patterns = [
+            'looping',
+            '已发布事件',
+            'heartbeat',
+            'meta_event',
+            'status',
+            'interval',
+            'post_type',
+            'self_id',
+            '命令前缀集合',
+            'ncatbot.group_message_event',
+            'ncatbot.heartbeat_event',
+            'ncatbot.startup_event'
+        ]
+        
+        # 如果日志包含噪音关键词，过滤掉
+        for pattern in noise_patterns:
+            if pattern in log_message.lower():
+                return False
+        
+        # 对于不包含群组信息和噪音的日志，全部记录
+        return True
+
+# 配置Python日志记录器
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# 为所有日志记录器添加过滤器
+for handler in logging.getLogger().handlers:
+    handler.addFilter(GroupLogFilter())
 
 # ========= 注册回调函数 ==========
 @bot.group_event()
 async def on_group_message(msg: GroupMessage):
+    # 在事件处理的最开始就进行群组过滤
+    # 只处理指定群组695934967的消息，其他群组直接返回
+    if str(msg.group_id) != TARGET_GROUP_ID:
+        # 不记录任何日志，完全忽略其他群组的消息
+        return
+    
+    logger.debug(f"收到目标群组 {msg.group_id} 的消息: {msg.raw_message}")
+    
     if msg.raw_message == "测试":
         await msg.reply(text="NcatBot 测试成功喵~")
 
@@ -57,27 +86,5 @@ async def on_private_message(msg: PrivateMessage):
 
 # ========== 启动 BotClient ==========
 if __name__ == "__main__":
-    # 配置日志过滤器
-    root_logger = logging.getLogger()
-    
-    # 创建过滤器实例
-    qq_filter = QQFilter()
-    
-    # 移除所有现有的StreamHandler，重新添加带过滤器的
-    for handler in root_logger.handlers[:]:
-        if isinstance(handler, logging.StreamHandler):
-            root_logger.removeHandler(handler)
-    
-    # 添加带过滤器的StreamHandler，设置日志级别为DEBUG
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.DEBUG)  # 设置为DEBUG级别，确保能看到所有日志
-    ch.addFilter(qq_filter)  # 使用addFilter而不是setFilter
-    
-    # 保持原有的日志格式
-    formatter = logging.Formatter(os.environ["LOG_FORMAT"], datefmt="%H:%M:%S")
-    ch.setFormatter(formatter)
-    
-    root_logger.addHandler(ch)
-    
     # 启动Bot
     bot.run(bt_uin="58805194", enable_webui_interaction=False)

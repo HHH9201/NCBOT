@@ -116,7 +116,7 @@ class SpeakRank(BasePlugin):
                 ''')
                 
                 conn.commit()
-                _log.info(f"[SpeakRank] 数据库初始化完成: {self.db_path}")
+                _log.debug(f"[SpeakRank] 数据库初始化完成: {self.db_path}")
         except Exception as e:
             _log.error(f"[SpeakRank] 数据库初始化失败: {e}")
             raise
@@ -141,7 +141,7 @@ class SpeakRank(BasePlugin):
                 for group_id, user_id, count in daily_rows:
                     self.daily_speak_count[group_id][today][user_id] = count
                 
-                _log.info(f"[SpeakRank] 已加载 {len(rows)} 条总发言记录，{len(daily_rows)} 条今日发言记录")
+                _log.debug(f"[SpeakRank] 已加载 {len(rows)} 条总发言记录，{len(daily_rows)} 条今日发言记录")
         except Exception as e:
             _log.error(f"[SpeakRank] 加载数据失败: {e}")
             self.speak_count = defaultdict(lambda: defaultdict(int))
@@ -333,7 +333,7 @@ class SpeakRank(BasePlugin):
             # 条件1: 用户个人发言每达到10次就保存到数据库
             if current_count % 10 == 0:
                 self._save_speak_data(group_id, user_id, current_count)
-                _log.info(f"[SpeakRank] 用户发言达10次，自动保存 - 群{group_id} 用户{user_id}")
+                _log.debug(f"[SpeakRank] 用户发言达10次，自动保存 - 群{group_id} 用户{user_id}")
             
             # 条件2: 距离上次保存超过1分钟且有未保存的更改
             elif self._should_auto_save():
@@ -341,7 +341,7 @@ class SpeakRank(BasePlugin):
                 for gid, users in self.speak_count.items():
                     for uid, count in users.items():
                         self._save_speak_data(gid, uid, count)
-                _log.info(f"[SpeakRank] 定时自动保存 - 群{group_id} 用户{user_id}")
+                _log.debug(f"[SpeakRank] 定时自动保存 - 群{group_id} 用户{user_id}")
             
             # 处理命令
             if msg.raw_message.strip() == "总发言榜":
@@ -404,7 +404,7 @@ class SpeakRank(BasePlugin):
     
     async def on_load(self):
         """插件加载时调用"""
-        _log.info(f"[SpeakRank] 插件已加载，版本 {self.version}")
+        _log.debug(f"[SpeakRank] 插件已加载，版本 {self.version}")
         
         # 启动每日定时任务
         try:
@@ -412,7 +412,7 @@ class SpeakRank(BasePlugin):
             # 假设可以通过某种方式获取到bot_api
             # self.daily_task_manager.set_bot_api(bot_api)
             # await self.daily_task_manager.start_daily_task()
-            _log.info("[SpeakRank] 每日定时任务准备就绪（需要BotAPI实例）")
+            _log.debug("[SpeakRank] 每日定时任务准备就绪（需要BotAPI实例）")
         except Exception as e:
             _log.error(f"[SpeakRank] 启动每日任务失败: {e}")
     

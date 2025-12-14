@@ -1,7 +1,7 @@
 root: '1783069903'
 bt_uin: '58805194'
 enable_webui_interaction: false
-debug: false
+debug: true
 github_proxy: null
 check_ncatbot_update: true
 skip_ncatbot_install_check: false
@@ -18,6 +18,9 @@ napcat:
   remote_mode: false
   report_self_message: false
   report_forward_message_detail: true
+  group_whitelist:
+  - 695934967
+  group_blacklist: []
 plugin:
   plugins_dir: plugins
   plugin_whitelist: []
