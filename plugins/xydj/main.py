@@ -355,8 +355,8 @@ HEADERS.update({
     'Accept-Encoding': 'gzip, deflate',  # 移除br(brotli)支持
     'Cache-Control': 'no-cache',
     'Pragma': 'no-cache',
-    'Referer': BYRUT_BASE,  # 添加Referer头
-    'Origin': BYRUT_BASE,  # 添加Origin头
+    'Referer': "https://byrutgame.org",  # 添加Referer头
+    'Origin': "https://byrutgame.org",  # 添加Origin头
     'DNT': '1',  # 不追踪请求
     'Connection': 'keep-alive',  # 保持连接
     'Upgrade-Insecure-Requests': '1',  # 升级不安全请求
@@ -370,7 +370,7 @@ HEADERS.update({
 async def search_byrut(name: str) -> list:
     """返回 [{href, title, category}, ...] 最多3条"""
     params = {"do": "search", "subaction": "search", "story": name}
-    url = f"{BYRUT_BASE}/index.php"
+    url = "https://byrutgame.org/index.php"
     
     # 重试机制配置
     max_retries = 3
@@ -536,16 +536,16 @@ def _apply_backup_solution(item: dict, error_type: str) -> None:
 # -------------------- ByrutGame 详情（异步+代理+SSL 关闭） ----------
 async def fetch_byrut_detail(item: dict) -> None:
     href = item["href"]
-    # 检查是否已经是代理链接
-    if href.startswith(BYRUT_BASE):
-        # 已经是代理链接，直接使用
+    # 检查是否已经是正确的链接
+    if href.startswith("https://byrutgame.org"):
+        # 已经是正确链接，直接使用
         proxy_url = href
     else:
-        # 不是代理链接，转换为代理链接
-        detail_path = href.replace("https://byrutgame.org", "")
+        # 不是正确链接，转换为正确链接
+        detail_path = href.replace("https://napcat.1783069903.workers.dev", "")
         if not detail_path.startswith("/"):
             detail_path = "/" + detail_path
-        proxy_url = f"{BYRUT_BASE}{detail_path}"
+        proxy_url = f"https://byrutgame.org{detail_path}"
     
     # 重试机制配置
     max_retries = 3
@@ -707,7 +707,7 @@ async def fetch_byrut_detail(item: dict) -> None:
     tor_tag = soup.select_one("a.itemtop_games") or soup.select_one("a:-soup-contains('Скачать торрент')")
     torrent_url = tor_tag["href"] if tor_tag else None
     if torrent_url and torrent_url.startswith("/"):
-        torrent_url = f"{BYRUT_BASE}{torrent_url}"
+        torrent_url = f"https://byrutgame.org{torrent_url}"
 
     item.update({"update_time": update_time, "torrent_url": torrent_url})
 
@@ -948,11 +948,11 @@ class Xydj(BasePlugin):
                     print(f"[Byrut] 找到联机资源: {item['href']}")
                     await fetch_byrut_detail(item)
                 
-                # 联机版内容（中文展示名 + 更新时间 + 种子）
+                # 联机版内容（英文展示名 + 更新时间 + 种子）
                 联机内容 = []
                 if byrut_results:
                     联机内容.append("🎮 【联机版】\n")
-                    联机内容.append(f"📌 游戏名字：{chinese_display}\n")   # ← 中文展示名
+                    联机内容.append(f"📌 游戏名字：{english_keyword}\n")   # ← 英文展示名
                     
                     for idx, item in enumerate(byrut_results, 1):
                         if len(byrut_results) > 1:
