@@ -41,8 +41,8 @@ COOKIES = {
     "_ok4_": "k7Ss53TvUyeXcsWfWBuG3EDFCuhFBobWvQAsWPR4u7n/Fx1oJgJ582qBY9G6J2s2mjP6qe3nvbV2HpnvLzDf8bo1kDTJie9uhaXfKSSh1qmvZC0OvV41h5ex++Iw3moO",
     "ripro_notice_cookie": "1",
     "TDC_itoken": "619377261%3A1765550565",
-    "PHPSESSID": "10ul6aj41hfuguh3j71fvvn4g4",
-    "wordpress_logged_in_c1baf48ff9d49282e5cd4050fece6d34": "HHH9201%7C1766760171%7C5mAlNcIYZrvtS4Cxg5ckAeyivEqEGcYux4YtHtolbnS%7Cb012109b8803e7f36bc7bd9cf4f0a475a7dd72465b8f78c60e7c228c698f3316"
+    "PHPSESSID": "d8b07vmi1bn8afetv8sv4usjaf",
+    "wordpress_logged_in_c1baf48ff9d49282e5cd4050fece6d34": "HHH9201%7C1767974695%7CQ4tEt1tFwCrMiIaldm5SP67RHzJuCPXO2QjGTgaSiTS%7C05b94cf8886df937b32923032105b9b51d5c13010a637b42b9d9f79083a2f736"
 }
 PROXY = "http://127.0.0.1:7899"
 BYRUT_BASE = "https://napcat.1783069903.workers.dev"

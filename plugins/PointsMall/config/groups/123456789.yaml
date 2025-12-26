@@ -1,0 +1,88 @@
+# /home/hjh/BOT/NCBOT/plugins/PointsMall/config/groups/123456789.yaml
+# 群组 123456789 的个性化配置
+
+# 签到积分配置（覆盖全局配置）
+sign_in:
+  points_config:
+    # 该群组的基础积分更高
+    base_points: 5
+    
+    # 连续签到奖励更丰厚
+    consecutive_bonus: 3
+    max_consecutive_bonus: 100
+    
+    # 随机奖励范围更大
+    random_bonus_min: 2
+    random_bonus_max: 10
+  
+  # 特殊日期奖励配置
+  special_dates:
+    holidays:
+      # 该群组的特殊节日
+      "01-01":  # 元旦
+        bonus_points: 100
+        message: "🎊 新年快乐！获得群组专属节日奖励100积分！"
+      
+      "06-18":  # 群组创建纪念日
+        bonus_points: 200
+        message: "🎉 群组纪念日快乐！获得200积分特别奖励！"
+
+# 商城配置（覆盖全局配置）
+mall:
+  mall_config:
+    # 该群组每日兑换限制更高
+    daily_limit: 20
+    
+    # 启用所有功能
+    enable_gift: true
+    enable_lottery: true
+    enable_transfer: true
+    enable_red_packet: true
+  
+  lottery_config:
+    # 抽奖消耗更低
+    cost_per_try: 30
+    
+    # 中奖概率更高
+    prizes:
+      - name: "特等奖"
+        points: 2000
+        probability: 0.01
+      - name: "一等奖"
+        points: 1000
+        probability: 0.05
+      - name: "二等奖"
+        points: 500
+        probability: 0.1
+      - name: "三等奖"
+        points: 200
+        probability: 0.2
+      - name: "四等奖"
+        points: 100
+        probability: 0.3
+      - name: "五等奖"
+        points: 50
+        probability: 0.2
+      - name: "谢谢参与"
+        points: 0
+        probability: 0.14
+
+# 群组专属商品
+default_items:
+  - name: "群组专属称号"
+    description: "24小时群组专属称号特权"
+    price: 300
+    category: "特殊称号"
+    stock: -1
+  
+  - name: "群组管理卡"
+    description: "获得临时管理权限"
+    price: 1000
+    category: "功能特权"
+    stock: 5
+  
+  - name: "群组红包"
+    description: "向全群发送红包"
+    price: 500
+    category: "娱乐道具"
+    stock: 10

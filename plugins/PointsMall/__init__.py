@@ -1,3 +1,3 @@
-from .main import PointsMall, PointsMallPlugin
+# from .main import PointsMall, PointsMallPlugin
 
-__all__ = ['PointsMall', 'PointsMallPlugin']
+# __all__ = ['PointsMall', 'PointsMallPlugin']

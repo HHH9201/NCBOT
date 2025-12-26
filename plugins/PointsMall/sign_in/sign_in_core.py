@@ -8,6 +8,13 @@ import random
 import yaml
 import os
 from typing import Optional, Dict, List, Tuple
+import sys
+import os
+
+# 添加配置管理器路径
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config.config_manager import ConfigManager
+from utils.error_handler import error_handler, error_decorator
 
 class SignInManager:
     """签到积分管理器"""
@@ -15,41 +22,12 @@ class SignInManager:
     def __init__(self, db_path: str = "/home/hjh/BOT/NCBOT/mydb/mydb.db"):
         """初始化签到管理器"""
         self.db_path = db_path
-        self.config = self.load_config()
+        self.config_manager = ConfigManager()
         self.init_database()
     
-    def load_config(self):
-        """加载配置文件"""
-        config_path = "/home/hjh/BOT/NCBOT/plugins/PointsMall/config/sign_in.yaml"
-        root_config_path = "/home/hjh/BOT/NCBOT/plugins/PointsMall/config/root.yaml"
-        
-        try:
-            # 加载主配置
-            with open(config_path, 'r', encoding='utf-8') as file:
-                config = yaml.safe_load(file)
-            
-            # 加载root配置
-            try:
-                with open(root_config_path, 'r', encoding='utf-8') as root_file:
-                    root_config = yaml.safe_load(root_file)
-                    if root_config and 'root_config' in root_config:
-                        config['root_config'] = root_config['root_config']
-                    elif root_config:
-                        # 如果root.yaml中没有root_config键，直接使用整个文件内容
-                        config['root_config'] = root_config
-            except FileNotFoundError:
-                print("root.yaml配置文件不存在，跳过root配置加载")
-            except Exception as e:
-                print(f"加载root配置文件失败: {e}，跳过root配置")
-            
-            return config
-            
-        except FileNotFoundError:
-            # 如果主配置文件不存在，返回默认配置
-            return self.get_default_config()
-        except Exception as e:
-            print(f"加载配置文件失败: {e}，使用默认配置")
-            return self.get_default_config()
+    def get_config(self, group_id: str = None) -> Dict:
+        """获取配置（支持多群组）"""
+        return self.config_manager.get_config(group_id, 'sign_in')
     
     def get_default_config(self):
         """默认配置"""
@@ -80,7 +58,7 @@ class SignInManager:
         }
     
     def init_database(self):
-        """初始化数据库表"""
+        """初始化数据库表并创建索引"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
@@ -113,43 +91,80 @@ class SignInManager:
                 )
             ''')
             
-            # 创建索引
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_sign_date ON sign_in_records(sign_date)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_group ON user_points(user_id, group_id)')
+            # 创建索引以优化查询性能
+            # 签到记录表索引
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_sign_records_user_group_date ON sign_in_records(user_id, group_id, sign_date)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_sign_records_group_date ON sign_in_records(group_id, sign_date)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_sign_records_date ON sign_in_records(sign_date)')
+            
+            # 用户积分表索引
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_points_user_group ON user_points(user_id, group_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_points_group_points ON user_points(group_id, total_points)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_points_group_consecutive ON user_points(group_id, consecutive_days)')
+            
+            # 创建视图以简化复杂查询
+            cursor.execute('''
+                CREATE VIEW IF NOT EXISTS v_user_statistics AS
+                SELECT 
+                    u.user_id,
+                    u.group_id,
+                    u.total_points,
+                    u.consecutive_days,
+                    u.last_sign_date,
+                    COUNT(DISTINCT s.sign_date) as total_sign_days,
+                    COALESCE(SUM(s.points_earned), 0) as total_earned_points,
+                    COALESCE(AVG(s.points_earned), 0) as avg_points_per_day
+                FROM user_points u
+                LEFT JOIN sign_in_records s ON u.user_id = s.user_id AND u.group_id = s.group_id
+                GROUP BY u.user_id, u.group_id
+            ''')
             
             conn.commit()
     
+    @error_decorator
     def get_user_points(self, user_id, group_id):
         """获取用户当前积分"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT total_points, consecutive_days, last_sign_date 
-            FROM user_points 
-            WHERE user_id = ? AND group_id = ?
-        ''', (user_id, group_id))
-        
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result:
-            return {
-                'total_points': result[0],
-                'consecutive_days': result[1],
-                'last_sign_date': result[2]
-            }
-        else:
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT total_points, consecutive_days, last_sign_date 
+                FROM user_points 
+                WHERE user_id = ? AND group_id = ?
+            ''', (user_id, group_id))
+            
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                return {
+                    'total_points': result[0],
+                    'consecutive_days': result[1],
+                    'last_sign_date': result[2]
+                }
+            else:
+                return {
+                    'total_points': 0,
+                    'consecutive_days': 0,
+                    'last_sign_date': None
+                }
+        except Exception as e:
+            error_handler.handle_database_error(e, 'get_user_points', {
+                'user_id': user_id,
+                'group_id': group_id
+            })
             return {
                 'total_points': 0,
                 'consecutive_days': 0,
                 'last_sign_date': None
             }
     
-    def calculate_points(self, consecutive_days):
-        """计算签到获得的积分"""
-        points_config = self.config.get('points_config', {})
-        feature_config = self.config.get('feature_config', {})
+    def calculate_points(self, consecutive_days, group_id: str = None):
+        """计算签到获得的积分（支持多群组配置）"""
+        sign_in_config = self.get_config(group_id)
+        points_config = sign_in_config.get('points_config', {})
+        feature_config = sign_in_config.get('feature_config', {})
         
         # 基础积分
         base_points = points_config.get('base_points', 10)
@@ -182,7 +197,7 @@ class SignInManager:
     
     def is_root_user(self, user_id):
         """检查是否为root用户"""
-        root_config = self.config.get('root_config', {})
+        root_config = self.get_config().get('root_config', {})
         root_users = root_config.get('root_users', [])
         return str(user_id) in root_users
     
@@ -196,7 +211,7 @@ class SignInManager:
         
         # 检查是否为root用户
         is_root = self.is_root_user(user_id)
-        root_config = self.config.get('root_config', {})
+        root_config = self.get_config().get('root_config', {})
         privileges = root_config.get('privileges', {})
         
         # 检查今天是否已经签到（root用户不受限制）
@@ -222,7 +237,7 @@ class SignInManager:
             consecutive_days = 1
         
         # 计算获得的积分（root用户与普通用户积分计算一致）
-        points_earned, extra_bonus = self.calculate_points(consecutive_days)
+        points_earned, extra_bonus = self.calculate_points(consecutive_days, group_id)
         
         new_total_points = user_info['total_points'] + points_earned
         
@@ -253,7 +268,7 @@ class SignInManager:
             conn.commit()
             
             # 生成签到成功消息
-            message = self.generate_success_message(user_name, points_earned, consecutive_days, new_total_points, user_id, extra_bonus)
+            message = self.generate_success_message(user_name, points_earned, consecutive_days, new_total_points, user_id, extra_bonus, group_id)
             
             return {
                 'success': True,
@@ -274,9 +289,10 @@ class SignInManager:
         finally:
             conn.close()
     
-    def generate_success_message(self, user_name, points_earned, consecutive_days, total_points, user_id=None, extra_bonus=0):
-        """生成签到成功消息"""
-        message_config = self.config.get('message_config', {})
+    def generate_success_message(self, user_name, points_earned, consecutive_days, total_points, user_id=None, extra_bonus=0, group_id: str = None):
+        """生成签到成功消息（支持多群组配置）"""
+        sign_in_config = self.get_config(group_id)
+        message_config = sign_in_config.get('message_config', {})
         lucky_words = message_config.get('lucky_words', [
             '🍀 今日好运连连！',
             '✨ 幸运值MAX！',
@@ -287,14 +303,14 @@ class SignInManager:
         
         # 检查是否为root用户
         is_root = user_id and self.is_root_user(user_id)
-        root_config = self.config.get('root_config', {})
+        root_config = sign_in_config.get('root_config', {})
         privileges = root_config.get('privileges', {})
         
         # 检查是否有特殊日期奖励
-        extra_message = self.check_special_date_bonus()
+        extra_message = self.check_special_date_bonus(group_id)
         
         # 获取用户等级信息
-        level_info = self.get_level_info(total_points)
+        level_info = self.get_level_info(total_points, group_id)
         
         # 基础消息（root用户与普通用户消息格式一致，仅添加标识）
         messages = [
@@ -324,13 +340,14 @@ class SignInManager:
         
         return '\n'.join(messages)
     
-    def check_special_date_bonus(self):
-        """检查特殊日期奖励"""
-        feature_config = self.config.get('feature_config', {})
+    def check_special_date_bonus(self, group_id: str = None):
+        """检查特殊日期奖励（支持多群组配置）"""
+        sign_in_config = self.get_config(group_id)
+        feature_config = sign_in_config.get('feature_config', {})
         if not feature_config.get('enable_special_dates', True):
             return ""
         
-        special_dates = self.config.get('special_dates', {})
+        special_dates = sign_in_config.get('special_dates', {})
         holidays = special_dates.get('holidays', {})
         
         today = datetime.datetime.now()
@@ -342,13 +359,14 @@ class SignInManager:
         
         return ""
 
-    def get_level_info(self, total_points: int) -> Dict[str, str]:
-        """根据积分获取等级信息"""
-        feature_config = self.config.get('feature_config', {})
+    def get_level_info(self, total_points: int, group_id: str = None) -> Dict[str, str]:
+        """根据积分获取等级信息（支持多群组配置）"""
+        sign_in_config = self.get_config(group_id)
+        feature_config = sign_in_config.get('feature_config', {})
         if not feature_config.get('enable_level_system', True):
             return {"name": "用户", "icon": "👤"}
         
-        level_config = self.config.get('level_config', {
+        level_config = sign_in_config.get('level_config', {
             0: {"name": "新手", "icon": "🌱"},
             100: {"name": "学徒", "icon": "⭐"},
             500: {"name": "达人", "icon": "🎯"},
@@ -365,23 +383,182 @@ class SignInManager:
         
         return current_level
     
-    def get_ranking(self, group_id, limit=10):
-        """获取群内积分排行榜"""
+    def get_ranking(self, group_id, limit=10, ranking_type="total"):
+        """获取群内排行榜
+        
+        Args:
+            group_id: 群组ID
+            limit: 返回数量
+            ranking_type: 排行类型
+                - "total": 总积分排行
+                - "daily": 今日积分排行
+                - "weekly": 本周积分排行
+                - "monthly": 本月积分排行
+                - "consecutive": 连续签到排行
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        cursor.execute('''
-            SELECT user_id, total_points, consecutive_days, last_sign_date
-            FROM user_points
-            WHERE group_id = ?
-            ORDER BY total_points DESC, consecutive_days DESC
-            LIMIT ?
-        ''', (group_id, limit))
+        today = datetime.date.today()
+        
+        if ranking_type == "total":
+            # 总积分排行
+            cursor.execute('''
+                SELECT user_id, total_points, consecutive_days, last_sign_date
+                FROM user_points
+                WHERE group_id = ?
+                ORDER BY total_points DESC, consecutive_days DESC
+                LIMIT ?
+            ''', (group_id, limit))
+            
+        elif ranking_type == "daily":
+            # 今日积分排行
+            cursor.execute('''
+                SELECT user_id, SUM(points_earned) as daily_points, 
+                       MAX(consecutive_days) as consecutive_days,
+                       MAX(sign_date) as last_sign_date
+                FROM sign_in_records
+                WHERE group_id = ? AND sign_date = ?
+                GROUP BY user_id
+                ORDER BY daily_points DESC
+                LIMIT ?
+            ''', (group_id, str(today), limit))
+            
+        elif ranking_type == "weekly":
+            # 本周积分排行（从周一开始）
+            start_of_week = today - datetime.timedelta(days=today.weekday())
+            cursor.execute('''
+                SELECT user_id, SUM(points_earned) as weekly_points, 
+                       MAX(consecutive_days) as consecutive_days,
+                       MAX(sign_date) as last_sign_date
+                FROM sign_in_records
+                WHERE group_id = ? AND sign_date >= ?
+                GROUP BY user_id
+                ORDER BY weekly_points DESC
+                LIMIT ?
+            ''', (group_id, str(start_of_week), limit))
+            
+        elif ranking_type == "monthly":
+            # 本月积分排行
+            start_of_month = today.replace(day=1)
+            cursor.execute('''
+                SELECT user_id, SUM(points_earned) as monthly_points, 
+                       MAX(consecutive_days) as consecutive_days,
+                       MAX(sign_date) as last_sign_date
+                FROM sign_in_records
+                WHERE group_id = ? AND sign_date >= ?
+                GROUP BY user_id
+                ORDER BY monthly_points DESC
+                LIMIT ?
+            ''', (group_id, str(start_of_month), limit))
+            
+        elif ranking_type == "consecutive":
+            # 连续签到排行
+            cursor.execute('''
+                SELECT user_id, consecutive_days, total_points, last_sign_date
+                FROM user_points
+                WHERE group_id = ?
+                ORDER BY consecutive_days DESC, total_points DESC
+                LIMIT ?
+            ''', (group_id, limit))
+            
+        else:
+            # 默认总积分排行
+            cursor.execute('''
+                SELECT user_id, total_points, consecutive_days, last_sign_date
+                FROM user_points
+                WHERE group_id = ?
+                ORDER BY total_points DESC, consecutive_days DESC
+                LIMIT ?
+            ''', (group_id, limit))
         
         results = cursor.fetchall()
         conn.close()
         
         return results
+    
+    def get_user_statistics(self, user_id: str, group_id: str) -> Dict:
+        """获取用户详细统计信息"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        today = datetime.date.today()
+        start_of_week = today - datetime.timedelta(days=today.weekday())
+        start_of_month = today.replace(day=1)
+        
+        # 基础信息
+        cursor.execute('''
+            SELECT total_points, consecutive_days, last_sign_date
+            FROM user_points
+            WHERE user_id = ? AND group_id = ?
+        ''', (user_id, group_id))
+        
+        base_info = cursor.fetchone()
+        if not base_info:
+            return {
+                'total_points': 0,
+                'consecutive_days': 0,
+                'last_sign_date': None,
+                'daily_points': 0,
+                'weekly_points': 0,
+                'monthly_points': 0,
+                'total_sign_days': 0,
+                'average_points': 0
+            }
+        
+        total_points, consecutive_days, last_sign_date = base_info
+        
+        # 今日积分
+        cursor.execute('''
+            SELECT SUM(points_earned) 
+            FROM sign_in_records 
+            WHERE user_id = ? AND group_id = ? AND sign_date = ?
+        ''', (user_id, group_id, str(today)))
+        
+        daily_points = cursor.fetchone()[0] or 0
+        
+        # 本周积分
+        cursor.execute('''
+            SELECT SUM(points_earned) 
+            FROM sign_in_records 
+            WHERE user_id = ? AND group_id = ? AND sign_date >= ?
+        ''', (user_id, group_id, str(start_of_week)))
+        
+        weekly_points = cursor.fetchone()[0] or 0
+        
+        # 本月积分
+        cursor.execute('''
+            SELECT SUM(points_earned) 
+            FROM sign_in_records 
+            WHERE user_id = ? AND group_id = ? AND sign_date >= ?
+        ''', (user_id, group_id, str(start_of_month)))
+        
+        monthly_points = cursor.fetchone()[0] or 0
+        
+        # 总签到天数
+        cursor.execute('''
+            SELECT COUNT(DISTINCT sign_date) 
+            FROM sign_in_records 
+            WHERE user_id = ? AND group_id = ?
+        ''', (user_id, group_id))
+        
+        total_sign_days = cursor.fetchone()[0] or 0
+        
+        # 平均积分
+        average_points = round(total_points / max(total_sign_days, 1), 2)
+        
+        conn.close()
+        
+        return {
+            'total_points': total_points,
+            'consecutive_days': consecutive_days,
+            'last_sign_date': last_sign_date,
+            'daily_points': daily_points,
+            'weekly_points': weekly_points,
+            'monthly_points': monthly_points,
+            'total_sign_days': total_sign_days,
+            'average_points': average_points
+        }
     
     def clear_user_points(self, operator_user_id: str, target_user_id: str, target_user_name: str, group_id: str) -> Dict[str, any]:
         """清空用户积分（仅root用户可用）"""

@@ -1,0 +1,123 @@
+# /home/hjh/BOT/NCBOT/plugins/PointsMall/config/mall.yaml
+# 积分商城配置文件
+
+# 商城基础配置
+mall_config:
+  # 积分兑换比例（预留功能）
+  exchange_rate: 1.0
+  
+  # 每日兑换限制
+  daily_limit: 10
+  
+  # 功能开关
+  enable_gift: true          # 启用礼物功能
+  enable_lottery: true       # 启用抽奖功能
+  enable_transfer: true      # 启用转账功能
+  enable_red_packet: true    # 启用红包功能
+
+# 抽奖配置
+lottery_config:
+  # 每次抽奖消耗积分
+  cost_per_try: 50
+  
+  # 奖品配置
+  prizes:
+    - name: "特等奖"
+      points: 1000
+      probability: 0.005
+    - name: "一等奖"
+      points: 500
+      probability: 0.01
+    - name: "二等奖"
+      points: 200
+      probability: 0.05
+    - name: "三等奖"
+      points: 100
+      probability: 0.1
+    - name: "四等奖"
+      points: 50
+      probability: 0.2
+    - name: "五等奖"
+      points: 20
+      probability: 0.3
+    - name: "谢谢参与"
+      points: 0
+      probability: 0.335
+
+# 红包配置
+red_packet_config:
+  # 最小红包金额
+  min_amount: 10
+  
+  # 最大红包金额
+  max_amount: 1000
+  
+  # 红包有效期（小时）
+  expire_hours: 24
+  
+  # 最大红包数量
+  max_packets: 100
+
+# 转账配置
+transfer_config:
+  # 最小转账金额
+  min_amount: 1
+  
+  # 最大转账金额
+  max_amount: 10000
+  
+  # 每日转账次数限制
+  daily_limit: 5
+
+# 商品分类配置
+categories:
+  - name: "虚拟物品"
+    description: "虚拟特权和服务"
+  - name: "娱乐道具"
+    description: "娱乐互动道具"
+  - name: "特殊称号"
+    description: "特殊称号和徽章"
+  - name: "功能特权"
+    description: "功能增强特权"
+
+# 默认商品配置
+default_items:
+  - name: "改名卡"
+    description: "修改群昵称特权"
+    price: 100
+    category: "功能特权"
+    stock: -1
+  
+  - name: "禁言豁免"
+    description: "24小时禁言豁免权"
+    price: 200
+    category: "功能特权"
+    stock: -1
+  
+  - name: "专属称号"
+    description: "24小时专属称号"
+    price: 150
+    category: "特殊称号"
+    stock: -1
+  
+  - name: "幸运星"
+    description: "增加抽奖中奖概率"
+    price: 300
+    category: "娱乐道具"
+    stock: 10
+  
+  - name: "双倍积分卡"
+    description: "下次签到获得双倍积分"
+    price: 500
+    category: "虚拟物品"
+    stock: 5
+
+# 消息模板
+message_templates:
+  exchange_success: "🎉 兑换成功！消耗{points}积分获得{item_name}"
+  exchange_failed: "❌ 兑换失败：{reason}"
+  transfer_success: "💸 转账成功！向{target}转账{points}积分"
+  transfer_failed: "❌ 转账失败：{reason}"
+  lottery_result: "🎲 抽奖结果：{prize}，{result}"
+  red_packet_sent: "🧧 红包已发送！总金额{total_points}，数量{count}"
+  red_packet_claimed: "🎁 恭喜抢到红包！获得{points}积分"
