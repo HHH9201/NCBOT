@@ -49,11 +49,6 @@ class SpeakRank(BasePlugin):
     
     def __init__(self, event_bus=None, **kwargs):
         super().__init__(event_bus=event_bus, **kwargs)
-        # 创建数据库目录（如果不存在）
-        db_dir = Path("/home/hjh/BOT/NCBOT/mydb")
-        db_dir.mkdir(exist_ok=True)
-        self.db_path = db_dir / "mydb.db"
-        
         # 初始化数据库连接
         self._init_database()
         
@@ -116,7 +111,7 @@ class SpeakRank(BasePlugin):
                 ''')
                 
                 conn.commit()
-                _log.debug(f"[SpeakRank] 数据库初始化完成: {self.db_path}")
+                _log.debug(f"[SpeakRank] 数据库初始化完成")
         except Exception as e:
             _log.error(f"[SpeakRank] 数据库初始化失败: {e}")
             raise
@@ -230,7 +225,7 @@ class SpeakRank(BasePlugin):
             date_filter: 日期过滤，None表示总数，'today'表示今日，'yesterday'表示昨日
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 if date_filter is None:
@@ -368,7 +363,7 @@ class SpeakRank(BasePlugin):
             
             elif msg.raw_message.strip() == "发言统计":
                 # 获取群组统计信息
-                with sqlite3.connect(self.db_path) as conn:
+                with db_manager.get_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute('SELECT COUNT(*), SUM(speak_count) FROM speak_rank WHERE group_id = ?', (group_id,))
                     total_users, total_speaks = cursor.fetchone()
@@ -434,7 +429,7 @@ class SpeakRank(BasePlugin):
         """每天0点发送昨日发言排行榜"""
         try:
             # 获取所有有数据的群组
-            with sqlite3.connect(self.db_path) as conn:
+            with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('SELECT DISTINCT group_id FROM daily_speak_rank')
                 group_ids = [row[0] for row in cursor.fetchall()]

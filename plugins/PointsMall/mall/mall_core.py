@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import yaml
 import os
 import sys
+from pathlib import Path
 
 # 添加配置管理器路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,7 +26,7 @@ class PointsMallManager:
     
     def load_config(self):
         """加载商城配置"""
-        config_path = "/home/hjh/BOT/NCBOT/plugins/PointsMall/config/mall.yaml"
+        config_path = Path(__file__).parent.parent / "config" / "mall.yaml"
         
         try:
             with open(config_path, 'r', encoding='utf-8') as file:

@@ -30,7 +30,7 @@ def get_text_size(font, text):
         total_height += height
     return max_width, total_height
 
-async def search_game(game_name):
+async def search_game(game_name, cookies_list=None):
     logging.info(f"开始搜索游戏: {game_name}")
     driver = None
     try:
@@ -50,20 +50,12 @@ async def search_game(game_name):
         driver.get(url)
         logging.info(f"打开网页: {url}")
 
-        cookies = [
-            {"name": "ripro_notice_cookie", "value": "1"},
-            {"name": "PHPSESSID", "value": "ousmvekb3jucni5e9f2ikk9eij"},
-            {"name": "guardok",
-             "value": "XgE63wqBDiYfTW+cTDRcb6lKtmrVZQ5+j5/uMzk+yaOGDtH9LYEh6swmXQ4se1nxHjdONKp6oEbxMLFup5HOSiujb/Af6p7F8Mz8Q6FITbZqTstpBizV4e0/5Mqfk4ak"},
-            {"name": "wordpress_test_cookie", "value": "WP%20Cookie%20check"},
-            {"name": "wordpress_logged_in_983b79f8b9342c8a4779015fd5f20f4a",
-             "value": "HHH9201%7C1744688847%7CwOUVNn0VmNNOPZZwt95GNiiEh2fclezfLu2xr0RujRv%7C00efac8a0ee0306bb475eada421bdb25e0d4f230fb9ee1d87827812590cbcdec"}
-        ]
-        logging.info("添加并刷新 Cookie")
-        for cookie in cookies:
-            driver.add_cookie(cookie)
-        driver.refresh()
-        logging.info("刷新页面完成")
+        if cookies_list:
+            logging.info("添加并刷新 Cookie")
+            for cookie in cookies_list:
+                driver.add_cookie(cookie)
+            driver.refresh()
+            logging.info("刷新页面完成")
 
         time.sleep(2)
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")

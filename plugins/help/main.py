@@ -97,15 +97,7 @@ class Help(BasePlugin):
 
     async def _send_forward_msg(self, group_id: int, content_str: str):
         """发送伪造合并转发消息"""
-        nodes = [{
-            "type": "node",
-            "data": {
-                "name": "帮助助手",
-                "uin": "10000",
-                "content": content_str
-            }
-        }]
-        
+        nodes = [napcat_service.construct_node("10000", "帮助助手", content_str)]
         return await napcat_service.send_group_forward_msg(group_id, nodes)
 
     @bot.group_event

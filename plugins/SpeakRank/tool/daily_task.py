@@ -94,20 +94,23 @@ class DailyTaskManager:
                 try:
                     ranking_text = self.plugin._format_ranking(group_id, "yesterday")
                     
-                    # 使用BotAPI发送群消息
-                    await self.bot_api.send_group_msg(
-                        group_id=int(group_id),
-                        message=ranking_text
-                    )
+                    # 智能发送消息
+                    if len(ranking_text) > 200:
+                        # 构造转发节点
+                        nodes = [napcat_service.construct_node("10000", "发言排行榜", ranking_text)]
+                        await napcat_service.send_group_forward_msg(group_id, nodes)
+                    else:
+                        # 使用BotAPI发送群消息
+                        await self.bot_api.post_group_msg(
+                            group_id=int(group_id),
+                            message=ranking_text
+                        )
                     
-                    _log.info(f"[DailyTask] 群{group_id} 昨日排行榜已发送")
-                    
-                    # 添加小延迟避免发送过快
-                    await asyncio.sleep(1)
+                    # 避免发送太快
+                    await asyncio.sleep(2)
                     
                 except Exception as e:
-                    _log.error(f"[DailyTask] 发送群{group_id}昨日排行榜失败: {e}")
-                    continue
+                    _log.error(f"[DailyTask] 发送群 {group_id} 排行榜失败: {e}")
             
             _log.info("[DailyTask] 昨日排行榜发送完成")
             

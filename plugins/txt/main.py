@@ -1,4 +1,4 @@
-import os
+# /home/hjh/BOT/NCBOT/plugins/txt/main.py
 import os
 import yaml
 import logging

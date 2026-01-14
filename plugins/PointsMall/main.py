@@ -17,7 +17,7 @@ from utils.error_handler import error_handler
 from common.napcat import napcat_service
 
 # admin_tools模块已禁用，如需启用请取消注释下方导入
-# from utils.admin_tools import admin_tools
+from utils.admin_tools import admin_tools
 
 bot = CompatibleEnrollment
 

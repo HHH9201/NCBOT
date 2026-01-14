@@ -17,8 +17,14 @@ from utils.error_handler import error_handler, error_decorator
 class ConfigManager:
     """配置管理器"""
     
-    def __init__(self, config_dir: str = "/home/hjh/BOT/NCBOT/plugins/PointsMall/config"):
-        self.config_dir = config_dir
+    def __init__(self, config_dir: str = None):
+        if config_dir is None:
+            # 使用 pathlib 获取当前文件目录的父目录的 config 目录
+            from pathlib import Path
+            current_dir = Path(__file__).parent.parent
+            self.config_dir = str(current_dir / "config")
+        else:
+            self.config_dir = config_dir
         self.global_config = {}
         self.group_configs = {}
         self.config_files = {}

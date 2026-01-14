@@ -241,31 +241,35 @@ class SignInManager:
         new_total_points = user_info['total_points'] + points_earned
         
         # 更新数据库
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
         try:
-            # 对于root用户，如果是同一天多次签到，先删除之前的记录
-            if is_root and last_sign_date == str(today):
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 对于root用户，如果是同一天多次签到，先删除之前的记录
+                if is_root and last_sign_date == str(today):
+                    cursor.execute('''
+                        DELETE FROM sign_in_records 
+                        WHERE user_id = ? AND group_id = ? AND sign_date = ?
+                    ''', (user_id, group_id, str(today)))
+                
+                # 插入签到记录
                 cursor.execute('''
-                    DELETE FROM sign_in_records 
-                    WHERE user_id = ? AND group_id = ? AND sign_date = ?
-                ''', (user_id, group_id, str(today)))
-            
-            # 插入签到记录
-            cursor.execute('''
-                INSERT INTO sign_in_records (user_id, group_id, sign_date, points_earned, consecutive_days, total_points)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (user_id, group_id, str(today), points_earned, consecutive_days, new_total_points))
-            
-            # 更新用户积分总表
-            cursor.execute('''
-                INSERT OR REPLACE INTO user_points (user_id, group_id, total_points, consecutive_days, last_sign_date)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, group_id, new_total_points, consecutive_days, str(today)))
-            
-            conn.commit()
-            
+                    INSERT INTO sign_in_records (user_id, group_id, sign_date, points_earned, consecutive_days, total_points)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (user_id, group_id, str(today), points_earned, consecutive_days, new_total_points))
+                
+                # 更新用户积分总表
+                cursor.execute('''
+                    INSERT OR REPLACE INTO user_points (user_id, group_id, total_points, consecutive_days, last_sign_date)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (user_id, group_id, new_total_points, consecutive_days, str(today)))
+                
+                # db_manager context manager handles commit/rollback automatically if needed, 
+                # but explicit commit is fine too. However, the context manager usually commits on exit if no exception.
+                # Checking db_manager implementation: it yields conn. It doesn't auto-commit in the yield.
+                # So we must commit.
+                conn.commit()
+                
             # 生成签到成功消息
             message = self.generate_success_message(user_name, points_earned, consecutive_days, new_total_points, user_id, extra_bonus, group_id)
             
@@ -279,14 +283,14 @@ class SignInManager:
             }
             
         except Exception as e:
-            conn.rollback()
+            # conn.rollback() is handled by user if using manual commit, or we can just let it fail.
+            # Since we are using with block, if exception occurs, we just catch it.
+            # But we need to ensure consistency.
             return {
                 'success': False,
                 'message': f'❌ 签到失败：{str(e)}',
                 'current_points': user_info['total_points']
             }
-        finally:
-            conn.close()
     
     def generate_success_message(self, user_name, points_earned, consecutive_days, total_points, user_id=None, extra_bonus=0, group_id: str = None):
         """生成签到成功消息（支持多群组配置）"""

@@ -90,6 +90,9 @@ class GPT(BasePlugin):
     # ---------------- 🔍 2. 联网搜索手脚 ----------------
 
     def _search_web(self, query: str) -> str:
+        if not HAS_DDGS:
+            return ""
+            
         _log.info(f"正在联网搜索: {query}")
         try:
             with DDGS() as ddgs:

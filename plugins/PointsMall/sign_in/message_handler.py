@@ -10,7 +10,6 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.message_formatter import message_formatter
 from utils.error_handler import error_handler
-from common.napcat import napcat_service
 
 from .sign_in_core import SignInManager
 
@@ -122,17 +121,6 @@ class SignInMessageHandler:
         message_lines.append("\n💡 使用『今日排行』、『周榜』、『月榜』、『连续排行』查看不同维度排行")
         
         return "\n".join(message_lines)
-    
-    async def send_long_message(self, group_id, messages):
-        """发送长消息（使用转发消息）"""
-        if isinstance(messages, str):
-            messages = [messages]
-        
-        nodes = []
-        for i, msg in enumerate(messages):
-            nodes.append(napcat_service.construct_node("10000", "签到助手", msg))
-        
-        return await napcat_service.send_group_forward_msg(group_id, nodes)
     
     def handle_clear_points(self, user_id, group_id, user_name, message_text):
         """处理积分清空命令"""

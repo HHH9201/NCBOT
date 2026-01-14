@@ -149,8 +149,15 @@ class sjzmm(BasePlugin):
                     self.last_update_time = data['update_time']
                     
                     # 生成消息
-                    message_text = self._generate_password_message(data)
-                    
+                message_text = self._generate_password_message(data)
+                
+                # 智能发送消息（自动处理长消息）
+                # 尝试获取机器人QQ号，默认10000
+                bot_uin = "10000"
+                if len(message_text) > 200:
+                    nodes = [napcat_service.construct_node(bot_uin, "每日密码", message_text)]
+                    await napcat_service.send_group_forward_msg(msg.group_id, nodes)
+                else:
                     # 发送消息链，包含回复和文本
                     chain = MessageChain([
                         Reply(msg.message_id),

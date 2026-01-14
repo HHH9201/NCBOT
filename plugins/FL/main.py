@@ -2,6 +2,7 @@ import logging
 from ncatbot.plugin import BasePlugin, CompatibleEnrollment
 from ncatbot.core import GroupMessage
 from common import napcat_service
+from common.config import GLOBAL_CONFIG
 
 bot = CompatibleEnrollment
 logging.basicConfig(level=logging.INFO)
@@ -101,7 +102,7 @@ class FL(BasePlugin):
                                 "data": {
                                     "url": url,
                                     "headers": {
-                                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                                        "User-Agent": GLOBAL_CONFIG.get("user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"),
                                         "Referer": "https://api-m.com/ ",
                                         "Accept": "*/*",
                                         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"

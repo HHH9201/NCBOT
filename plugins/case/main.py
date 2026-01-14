@@ -1,3 +1,4 @@
+# /home/hjh/BOT/NCBOT/plugins/case/main.py
 from ncatbot.plugin import BasePlugin
 from ncatbot.core import GroupMessage
 from ncatbot.plugin_system.builtin_plugin.unified_registry import UnifiedRegistry
