@@ -24,5 +24,82 @@
     "consecutive_days": "连续签到天数，当前连续签到天数",
     "last_sign_date": "最后签到日期，最后一次签到的日期",
     "updated_at": "更新时间，记录最后更新的时间戳"
+  },
+  "daily_speak_rank": {
+    "id": "主键ID，自增",
+    "group_id": "群号",
+    "user_id": "用户QQ号",
+    "speak_date": "发言日期",
+    "speak_count": "当日发言次数",
+    "last_speak_time": "最后发言时间"
+  },
+  "mall_items": {
+    "id": "商品ID",
+    "name": "商品名称",
+    "description": "商品描述",
+    "price": "价格",
+    "stock": "库存(-1为无限)",
+    "category": "分类",
+    "enabled": "是否启用",
+    "created_at": "创建时间",
+    "updated_at": "更新时间"
+  },
+  "exchange_records": {
+    "id": "兑换记录ID",
+    "user_id": "用户QQ号",
+    "group_id": "群号",
+    "item_id": "商品ID",
+    "item_name": "商品名称",
+    "price": "兑换价格",
+    "quantity": "数量",
+    "exchange_date": "兑换日期",
+    "created_at": "创建时间"
+  },
+  "transfer_records": {
+    "id": "转账记录ID",
+    "from_user_id": "转出用户QQ",
+    "to_user_id": "转入用户QQ",
+    "group_id": "群号",
+    "points": "转账积分",
+    "transfer_date": "转账日期",
+    "created_at": "创建时间"
+  },
+  "lottery_records": {
+    "id": "抽奖记录ID",
+    "user_id": "用户QQ号",
+    "group_id": "群号",
+    "prize_name": "奖品名称",
+    "points_won": "赢得积分",
+    "cost_points": "消耗积分",
+    "lottery_date": "抽奖日期",
+    "created_at": "创建时间"
+  },
+  "red_packet_records": {
+    "id": "红包ID",
+    "sender_id": "发送者QQ",
+    "group_id": "群号",
+    "total_points": "总积分",
+    "packet_count": "红包个数",
+    "packet_type": "类型(random/fixed)",
+    "claimed_count": "已领取个数",
+    "created_at": "创建时间",
+    "expired_at": "过期时间"
+  },
+  "red_packet_claims": {
+    "id": "领取记录ID",
+    "packet_id": "红包ID",
+    "user_id": "领取用户QQ",
+    "points_received": "领取积分",
+    "claimed_at": "领取时间"
+  },
+  "v_user_statistics": {
+    "user_id": "用户QQ号",
+    "group_id": "群号",
+    "total_points": "当前总积分",
+    "consecutive_days": "连续签到天数",
+    "last_sign_date": "最后签到日期",
+    "total_sign_days": "累计签到天数",
+    "total_earned_points": "累计获得积分",
+    "avg_points_per_day": "日均获得积分"
   }
 }

@@ -13,7 +13,6 @@ import string
 import base64
 import aiohttp
 import aiofiles
-import requests
 import urllib3
 from pathlib import Path
 from bs4 import BeautifulSoup
@@ -22,37 +21,27 @@ from ncatbot.plugin import BasePlugin, CompatibleEnrollment
 from ncatbot.core.message import GroupMessage
 from ncatbot.core import Text, At, Reply, MessageChain, Image
 
+# 引入全局服务和配置
+from common import napcat_service, ai_service, GLOBAL_CONFIG
+
 # 配置更清爽的日志格式，去掉进程和线程信息
 
-# API配置
-API_URL = "https://api.siliconflow.cn/v1/chat/completions"
-API_HEADERS = {
-    "Authorization": "Bearer sk-ixmsswryqnmuyifjewdetqnjewdetq",
-    "Content-Type": "application/json"
-}
+# -------------------- 提取配置 --------------------
+PROXY = GLOBAL_CONFIG.get('proxy')
+BYRUT_BASE = GLOBAL_CONFIG.get('byrut_base')
+COOKIES = GLOBAL_CONFIG.get('cookies', {})
+HEADERS = {"User-Agent": GLOBAL_CONFIG.get('user_agent', "Mozilla/5.0")}
+
+# 图片路径处理
+TOOL_DIR = Path(__file__).parent / "tool"
+QQ_IMG = str(TOOL_DIR / GLOBAL_CONFIG.get('images', {}).get('qq_img', "TG.png"))
+BACKUP_IMG = str(TOOL_DIR / GLOBAL_CONFIG.get('images', {}).get('backup_img', "种子.png"))
 
 bot = CompatibleEnrollment
 
-
-# -------------------- 基础配置 --------------------
-QQ_IMG = "/home/hjh/BOT/NCBOT/plugins/xydj/tool/TG.png"
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-COOKIES = {
-    "_ok4_": "k7Ss53TvUyeXcsWfWBuG3EDFCuhFBobWvQAsWPR4u7n/Fx1oJgJ582qBY9G6J2s2mjP6qe3nvbV2HpnvLzDf8bo1kDTJie9uhaXfKSSh1qmvZC0OvV41h5ex++Iw3moO",
-    "ripro_notice_cookie": "1",
-    "TDC_itoken": "619377261%3A1765550565",
-    "PHPSESSID": "d8b07vmi1bn8afetv8sv4usjaf",
-    "wordpress_logged_in_c1baf48ff9d49282e5cd4050fece6d34": "HHH9201%7C1767974695%7CQ4tEt1tFwCrMiIaldm5SP67RHzJuCPXO2QjGTgaSiTS%7C05b94cf8886df937b32923032105b9b51d5c13010a637b42b9d9f79083a2f736"
-}
-PROXY = "http://127.0.0.1:7899"
-BYRUT_BASE = "https://napcat.1783069903.workers.dev"
-session = requests.Session()
-session.headers.update(HEADERS)
-session.proxies.update({"http": PROXY, "https": PROXY})
-session.verify = False
 urllib3.disable_warnings()
 
-CACHE_FILE = Path(__file__).parent / "game_name_cache.yaml"
+CACHE_FILE = TOOL_DIR / "game_name_cache.yaml"
 
 # -------------------- 工具函数 --------------------
 def load_cache():
@@ -81,7 +70,7 @@ def normalize(txt):
 # ------------------------------------------------------------------
 _title_cache = {}          # 重启即失效的内存缓存，如需持久化可改 redis
 
-def translate_to_chinese_title(eng: str) -> str:
+async def translate_to_chinese_title(eng: str) -> str:
     """
     输入英文关键词，返回 Steam 官方中文名；失败则回退原文。
     缓存 1 小时，避免重复请求。
@@ -93,22 +82,30 @@ def translate_to_chinese_title(eng: str) -> str:
     if eng in _title_cache:
         return _title_cache[eng]
 
-    payload = {
-        "model": "moonshotai/Kimi-K2-Instruct-0905",
-        "messages": [
-            {"role": "system", "content": "你是 Steam 中文名称翻译助手，只输出 steam 游戏官方中文名，其余任何文字都不要说。"},
-            {"role": "user", "content": f"{eng} 的 Steam 官方游戏中文名是什么"}
-        ],
-        "temperature": 0.1,
-        "max_tokens": 30
-    }
-    try:
-        resp = requests.post(API_URL, json=payload, headers=API_HEADERS,
-                             proxies=PROXY, timeout=10)
-        resp.raise_for_status()
-        zh = resp.json()["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        logging.warning("中文翻译失败: %s", e)
+    system_prompt = "你是 Steam 中文名称翻译助手，只输出 steam 游戏官方中文名，其余任何文字都不要说。"
+    prompt = f"{eng} 的 Steam 官方游戏中文名是什么"
+    
+    # 使用全局 AI 服务
+    # 注意：ai_service 内部已经处理了代理配置 (如果在初始化时传入或配置了)
+    # 但我们现在的 ai_service 封装比较简单，如果要传 proxy，需要调用 chat_completions
+    # 或者我们更新 ai_service 让它自动读取全局代理配置
+    
+    # 这里我们直接调用 simple_chat，假设 ai_service 已经配置好或者不需要特定代理
+    # 如果需要代理，我们应该改进 ai_service
+    
+    # 实际上，xydj 之前用了 PROXY。我们需要确认 ai_service 是否使用了 PROXY。
+    # 我们的 ai_service.simple_chat 调用 chat_completions，后者有 proxy 参数。
+    # 但 simple_chat 没有透传 proxy。
+    # 我们应该修改 ai_service 或者在这里调用 chat_completions。
+    
+    # 既然我们已经有了 PROXY 变量 (从 GLOBAL_CONFIG 获取)，我们可以传给 ai_service。
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt}
+    ]
+    zh = await ai_service.chat_completions(messages, temperature=0.1, max_tokens=30, proxy=PROXY)
+    
+    if not zh:
         zh = eng          # 失败就回退原文
 
     _title_cache[eng] =  zh
@@ -809,9 +806,6 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
     })
 
     # 4. 一次性发出
-    url = "http://101.35.164.122:3006/send_group_forward_msg"
-    headers = {'Content-Type': 'application/json', 'Authorization': 'Bearer he031701'}
-    
     # 计算资源数量
     single_count = len([line for line in 单机_lines if "链接" in line])
     multi_count = len([line for line in 联机_lines if "种子链接" in line])
@@ -823,58 +817,15 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
     if multi_count > 0:
         summary += f" (联机: {multi_count} 个)"
     
-    payload = {
-        "group_id": group_id,
-        "messages": nodes,
-        "source": game_title,
-        "summary": summary,
-        "prompt": f"[{game_title}]",
-        "news": [{"text": "点击查看游戏资源详情"}]
-    }
-
-    # 5. 增强错误处理和网络容错
-    max_retries = 3
-    retry_delay = 2
-    
-    for attempt in range(max_retries):
-        try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-                async with session.post(url, json=payload, headers=headers) as resp:
-                    if resp.status == 200:
-                        result = await resp.json()
-                        if result.get('status') == 'ok':
-                            logging.info(f"[Byrut] 转发消息发送成功")
-                            return True
-                        else:
-                            logging.warning(f"[Byrut] 转发消息发送失败: {result}")
-                    else:
-                        logging.warning(f"[Byrut] HTTP状态码错误: {resp.status}")
-                        
-                    if attempt < max_retries - 1:
-                        logging.info(f"[Byrut] 重试发送转发消息 (尝试 {attempt + 2}/{max_retries})")
-                        await asyncio.sleep(retry_delay)
-                        continue
-                    else:
-                        logging.error(f"[Byrut] 转发消息发送失败，已达到最大重试次数")
-                        return False
-                        
-        except asyncio.TimeoutError as e:
-            logging.error(f"[Byrut] 转发消息发送超时 (尝试 {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay)
-                continue
-        except aiohttp.ClientConnectorError as e:
-            logging.error(f"[Byrut] 转发消息连接错误 (尝试 {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay * (attempt + 1))  # 指数退避
-                continue
-        except Exception as e:
-            logging.exception(f"[Byrut] 转发消息发送异常 (尝试 {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay)
-                continue
-    
-    return False
+    # 5. 使用全局 NapCat 服务发送
+    return await napcat_service.send_group_forward_msg(
+        group_id=group_id,
+        nodes=nodes,
+        source=game_title,
+        summary=summary,
+        prompt=f"[{game_title}]",
+        news=[{"text": "点击查看游戏资源详情"}]
+    )
 
 
 # -------------------- 插件主类 --------------------

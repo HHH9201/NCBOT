@@ -11,6 +11,8 @@ from ncatbot.core.message import GroupMessage, PrivateMessage
 from ncatbot.core.message import MessageChain
 from ncatbot.core.event.message_segment.message_segment import Text, Image
 from ncatbot.utils import get_log
+from common.napcat import napcat_service
+from common.config import GLOBAL_CONFIG
 
 _log = get_log()
 _log.setLevel('INFO')
@@ -77,7 +79,7 @@ class Epic(BasePlugin):
         try:
             # 添加浏览器请求头以避免403错误
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'User-Agent': GLOBAL_CONFIG.get("user_agent", 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'),
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
             }
@@ -438,8 +440,8 @@ class Epic(BasePlugin):
         
         return translated_title
     
-    async def _format_game_info(self, game: Dict) -> List:
-        """格式化游戏信息 - 返回消息组件列表"""
+    async def _format_game_node_content(self, game: Dict) -> List[Dict]:
+        """格式化游戏信息 - 返回NapCat消息节点内容列表"""
         title = game.get("Title", "未知游戏")
         game_type = game.get("GameType", "未知类型")
         end_date = game.get("EndDate", "")
@@ -476,8 +478,8 @@ class Epic(BasePlugin):
         elif platform == "Steam":
             claim_url = steam_url if steam_url else "暂无链接"
         
-        # 构建消息组件列表
-        message_components = []
+        # 构建消息段列表
+        segments = []
         
         # 添加文本信息 - 美化格式
         status_icon = "🟢" if game_type == "当前免费" else "🟡" if game_type == "即将免费" else "⚪"
@@ -492,7 +494,7 @@ class Epic(BasePlugin):
         else:
             text_info += f"🔗 领取地址：暂无链接\n"
         
-        message_components.append(Text(text_info))
+        segments.append({"type": "text", "data": {"text": text_info}})
         
         # 如果有图片URL，添加图片组件
         if image_url:
@@ -511,20 +513,20 @@ class Epic(BasePlugin):
                     import base64
                     image_base64 = base64.b64encode(response.content).decode('utf-8')
                     
-                    # 使用base64创建Image组件
-                    message_components.append(Image(f"base64://{image_base64}"))
+                    # 添加图片段
+                    segments.append({"type": "image", "data": {"file": f"base64://{image_base64}"}})
                     
             except Exception as e:
                 _log.warning(f"无法加载图片 {image_url}: {e}")
         
-        return message_components
+        return segments
     
     @bot.group_event
     async def epic_free_games_group(self, event: GroupMessage):
         """群聊事件 - 获取Epic和Steam免费游戏"""
         text = event.raw_message.strip()
         
-        if text in ["epic", "Epic", "EPIC", "喜加一", "免费游戏"]:
+        if text in ["epic", "Epic", "EPIC", "喜加一", "免费游戏", "epic all", "Epic all", "EPIC ALL"]:
             await event.reply(MessageChain([Text("正在获取Epic和Steam免费游戏信息，请稍等...")]))
             
             games = await self._get_free_games()
@@ -533,83 +535,46 @@ class Epic(BasePlugin):
                 await event.reply(MessageChain([Text("❌ 当前没有可领取的免费游戏，请稍后再试\n💡 提示：免费游戏通常会在特定时间更新")]))
                 return
             
-            # 按平台分类游戏
             epic_games = [game for game in games if game.get("Platform") == "Epic"]
             steam_games = [game for game in games if game.get("Platform") == "Steam"]
             
-            # 构建消息组件列表
-            message_components = []
+            nodes = []
+            bot_uin = "10000"
+            if hasattr(event, 'self_id'):
+                bot_uin = str(event.self_id)
             
-            # 添加标题
-            message_components.append(Text(f"🎯 免费游戏信息汇总\n"))
-            message_components.append(Text(f"📊 EPIC：{len(epic_games)}个 | STEAM：{len(steam_games)}个\n"))
-            message_components.append(Text("=" * 40 + "\n\n"))
+            # Header Node
+            header_text = f"🎯 免费游戏信息汇总\n"
+            header_text += f"📊 EPIC：{len(epic_games)}个 | STEAM：{len(steam_games)}个\n"
+            header_text += "=" * 30
+            nodes.append(napcat_service.construct_node(bot_uin, "Epic助手", header_text))
             
-            # 添加Epic游戏
+            # Epic Games Nodes
             if epic_games:
-                message_components.append(Text(f"🎮 【EPIC 免费游戏】\n"))
-                message_components.append(Text("-" * 30 + "\n"))
-                for i, game in enumerate(epic_games, 1):
-                    message_components.append(Text(f"{i}. "))
-                    game_components = await self._format_game_info(game)
-                    message_components.extend(game_components)
-                    message_components.append(Text("\n"))
-                message_components.append(Text("\n"))
-            
-            # 添加Steam游戏
-            if steam_games:
-                message_components.append(Text(f"🎮 【STEAM 免费游戏】\n"))
-                message_components.append(Text("-" * 30 + "\n"))
-                for i, game in enumerate(steam_games, 1):
-                    message_components.append(Text(f"{i}. "))
-                    game_components = await self._format_game_info(game)
-                    message_components.extend(game_components)
-                    message_components.append(Text("\n"))
-            
-            await event.reply(MessageChain(message_components))
-        
-        elif text in ["epic all", "Epic all", "EPIC ALL"]:
-            games = await self._get_free_games()
-            
-            if not games:
-                await event.reply(MessageChain([Text("抱歉，暂时没有找到免费游戏。")]))
-                return
-            
-            # 按平台分类游戏
-            epic_games = [game for game in games if game.get("Platform") == "Epic"]
-            steam_games = [game for game in games if game.get("Platform") == "Steam"]
-            
-            # 构建消息组件列表
-            message_components = []
-            
-            # 添加标题
-            message_components.append(Text(f"EPIC：{len(epic_games)}个，STEAM：{len(steam_games)}个\n\n"))
-            
-            # 添加Epic游戏
-            if epic_games:
-                message_components.append(Text("【EPIC】\n"))
+                nodes.append(napcat_service.construct_node(bot_uin, "Epic助手", "🎮 【EPIC 免费游戏】"))
                 for game in epic_games:
-                    game_components = await self._format_game_info(game)
-                    message_components.extend(game_components)
-                    message_components.append(Text("\n"))
-                message_components.append(Text("\n"))
+                    content = await self._format_game_node_content(game)
+                    nodes.append(napcat_service.construct_node(bot_uin, "Epic助手", content))
             
-            # 添加Steam游戏
+            # Steam Games Nodes
             if steam_games:
-                message_components.append(Text("【STEAM】\n"))
+                nodes.append(napcat_service.construct_node(bot_uin, "Epic助手", "🚂 【STEAM 免费游戏】"))
                 for game in steam_games:
-                    game_components = await self._format_game_info(game)
-                    message_components.extend(game_components)
-                    message_components.append(Text("\n"))
+                    content = await self._format_game_node_content(game)
+                    nodes.append(napcat_service.construct_node(bot_uin, "Epic助手", content))
             
-            await event.reply(MessageChain(message_components))
+            # Send Forward Message
+            if nodes:
+                await napcat_service.send_group_forward_msg(event.group_id, nodes)
+            else:
+                await event.reply(MessageChain([Text("❌ 未找到任何免费游戏信息")]))
     
     @bot.private_event
     async def epic_free_games_private(self, event: PrivateMessage):
         """私聊事件 - 获取Epic和Steam免费游戏"""
         text = event.raw_message.strip()
         
-        if text in ["epic", "Epic", "EPIC", "喜加一", "免费游戏"]:
+        if text in ["epic", "Epic", "EPIC", "喜加一", "免费游戏", "epic all", "Epic all", "EPIC ALL"]:
             await event.reply(MessageChain([Text("正在获取Epic和Steam免费游戏信息，请稍等...")]))
             
             games = await self._get_free_games()
@@ -618,125 +583,35 @@ class Epic(BasePlugin):
                 await event.reply(MessageChain([Text("❌ 当前没有可领取的免费游戏，请稍后再试")]))
                 return
             
-            # 按平台分类游戏
             epic_games = [game for game in games if game.get("Platform") == "Epic"]
             steam_games = [game for game in games if game.get("Platform") == "Steam"]
             
-            # 构建响应消息
-            response = f"EPIC：{len(epic_games)}个，STEAM：{len(steam_games)}个\n\n"
+            # 构建消息链
+            segments = [Text(f"EPIC：{len(epic_games)}个，STEAM：{len(steam_games)}个\n\n")]
             
-            # 添加Epic游戏
             if epic_games:
-                response += "【EPIC】\n"
+                segments.append(Text("【EPIC】\n"))
                 for game in epic_games:
-                    response += await self._format_game_info(game)
-                    response += "\n"
-                response += "\n"
+                    content_list = await self._format_game_node_content(game)
+                    for item in content_list:
+                        if item['type'] == 'text':
+                            segments.append(Text(item['data']['text']))
+                        elif item['type'] == 'image':
+                            segments.append(Image(item['data']['file']))
+                    segments.append(Text("\n"))
             
-            # 添加Steam游戏
             if steam_games:
-                response += "【STEAM】\n"
+                segments.append(Text("【STEAM】\n"))
                 for game in steam_games:
-                    response += await self._format_game_info(game)
-                    response += "\n"
+                    content_list = await self._format_game_node_content(game)
+                    for item in content_list:
+                        if item['type'] == 'text':
+                            segments.append(Text(item['data']['text']))
+                        elif item['type'] == 'image':
+                            segments.append(Image(item['data']['file']))
+                    segments.append(Text("\n"))
             
-            await event.reply(MessageChain([Text(response)]))
-        
-        elif text in ["epic all", "Epic all", "EPIC ALL"]:
-            games = await self._get_free_games()
-            
-            if not games:
-                await event.reply(MessageChain([Text("抱歉，暂时没有找到免费游戏。")]))
-                return
-            
-            # 按平台分类游戏
-            epic_games = [game for game in games if game.get("Platform") == "Epic"]
-            steam_games = [game for game in games if game.get("Platform") == "Steam"]
-            
-            # 使用伪造合并转发API处理长消息
-            if len(games) > 3:
-                nodes = []
-                
-                # 添加Epic游戏节点
-                if epic_games:
-                    epic_info = f"【EPIC】共{len(epic_games)}个游戏\n"
-                    for game in epic_games:
-                        epic_info += await self._format_game_info(game)
-                        epic_info += "\n"
-                    nodes.append({
-                        "type": "node",
-                        "data": {
-                            "name": "EPIC免费游戏",
-                            "uin": "10000",
-                            "content": epic_info
-                        }
-                    })
-                
-                # 添加Steam游戏节点
-                if steam_games:
-                    steam_info = f"【STEAM】共{len(steam_games)}个游戏\n"
-                    for game in steam_games:
-                        steam_info += await self._format_game_info(game)
-                        steam_info += "\n"
-                    nodes.append({
-                        "type": "node",
-                        "data": {
-                            "name": "STEAM免费游戏",
-                            "uin": "10000",
-                            "content": steam_info
-                        }
-                    })
-                
-                # 使用伪造合并转发API
-                forward_url = "http://101.35.164.122:3006/send_group_forward_msg"
-                headers = {
-                    'Content-Type': 'application/json',
-                    'Authorization': 'Bearer he031701'
-                }
-                payload = {
-                    "user_id": event.user_id,
-                    "messages": nodes
-                }
-                
-                try:
-                    async with httpx.AsyncClient() as client:
-                        await client.post(forward_url, json=payload, headers=headers)
-                except Exception as e:
-                    _log.error(f"发送合并转发失败: {e}")
-                    # 降级为普通消息
-                    response = f"EPIC：{len(epic_games)}个，STEAM：{len(steam_games)}个\n\n"
-                    
-                    if epic_games:
-                        response += "【EPIC】\n"
-                        for game in epic_games[:5]:  # 限制前5个
-                            response += await self._format_game_info(game)
-                            response += "\n"
-                        response += "\n"
-                    
-                    if steam_games:
-                        response += "【STEAM】\n"
-                        for game in steam_games[:5]:  # 限制前5个
-                            response += await self._format_game_info(game)
-                            response += "\n"
-                    
-                    await event.reply(MessageChain([Text(response)]))
-            else:
-                response = f"EPIC：{len(epic_games)}个，STEAM：{len(steam_games)}个\n\n"
-                
-                if epic_games:
-                    response += "【EPIC】\n"
-                    for game in epic_games:
-                        response += await self._format_game_info(game)
-                        response += "\n"
-                    response += "\n"
-                
-                if steam_games:
-                    response += "【STEAM】\n"
-                    for game in steam_games:
-                        response += await self._format_game_info(game)
-                        response += "\n"
-                
-                await event.reply(MessageChain([Text(response)]))
+            await event.reply(MessageChain(segments))
     
     @bot.group_event
     async def epic_help(self, event: GroupMessage):

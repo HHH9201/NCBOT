@@ -8,6 +8,7 @@ from pathlib import Path
 import edge_tts
 from ncatbot.plugin import BasePlugin, CompatibleEnrollment
 from ncatbot.core import GroupMessage
+from common.config import GLOBAL_CONFIG
 
 # 配置日志
 logging.basicConfig(
@@ -46,7 +47,8 @@ class EdgeTTS(BasePlugin):
     
     @bot.group_event
     async def on_group_message(self, msg: GroupMessage):
-        if str(msg.group_id) != "695934967": return
+        enabled_groups = GLOBAL_CONFIG.get("edgetts.enabled_groups", [])
+        if str(msg.group_id) not in enabled_groups: return
         raw = msg.raw_message.strip()
         
         if raw.startswith("语音"):

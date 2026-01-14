@@ -1,7 +1,6 @@
 # /home/hjh/BOT/NCBOT/plugins/PointsMall/mall/mall_core.py
 # 积分商城核心模块
 
-import sqlite3
 import json
 import datetime
 import random
@@ -14,13 +13,13 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.config_manager import ConfigManager
 from utils.error_handler import error_handler, error_decorator
+from common.db import db_manager
 
 class PointsMallManager:
     """积分商城管理器"""
     
-    def __init__(self, db_path: str = "/home/hjh/BOT/NCBOT/mydb/mydb.db"):
+    def __init__(self):
         """初始化商城管理器"""
-        self.db_path = db_path
         self.config_manager = ConfigManager()
         self.init_database()
     
@@ -65,7 +64,7 @@ class PointsMallManager:
     
     def init_database(self):
         """初始化商城数据库表"""
-        with sqlite3.connect(self.db_path) as conn:
+        with db_manager.get_connection() as conn:
             cursor = conn.cursor()
             
             # 商品表
@@ -164,7 +163,7 @@ class PointsMallManager:
     def add_item(self, name: str, description: str, price: int, category: str, stock: int = -1) -> bool:
         """添加商品"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT INTO mall_items (name, description, price, category, stock)
@@ -179,7 +178,7 @@ class PointsMallManager:
     def get_items(self, category: str = None) -> List[Dict]:
         """获取商品列表"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 if category:
@@ -215,7 +214,7 @@ class PointsMallManager:
     def exchange_item(self, user_id: str, group_id: str, item_id: int, quantity: int = 1) -> Dict:
         """兑换商品（支持多群组配置）"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 # 获取商品信息
@@ -283,7 +282,7 @@ class PointsMallManager:
     def transfer_points(self, from_user_id: str, to_user_id: str, group_id: str, points: int) -> Dict:
         """积分转账"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 # 检查是否是自己转账给自己
@@ -340,7 +339,7 @@ class PointsMallManager:
     def lottery(self, user_id: str, group_id: str) -> Dict:
         """抽奖（支持多群组配置）"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 # 检查用户积分
@@ -399,28 +398,52 @@ class PointsMallManager:
                 # 记录抽奖
                 today = datetime.date.today()
                 cursor.execute('''
-                    INSERT INTO lottery_records 
-                    (user_id, group_id, prize_name, points_won, cost_points, lottery_date)
+                    INSERT INTO lottery_records (user_id, group_id, prize_name, points_won, cost_points, lottery_date)
                     VALUES (?, ?, ?, ?, ?, ?)
                 ''', (user_id, group_id, selected_prize['name'], prize_points, cost_per_try, str(today)))
                 
                 conn.commit()
                 
-                # 构建返回消息
-                message = f'� 抽奖结果：{selected_prize["name"]}！'
-                if prize_points > 0:
-                    message += f' 获得{prize_points}积分！'
-                
-                message += f'\n💰 消耗积分：{cost_per_try}'
-                message += f'\n📊 剩余积分：{user_points[0] - cost_per_try + prize_points}'
-                
                 return {
-                    'success': True,
-                    'message': message,
-                    'prize_name': selected_prize['name'],
-                    'prize_points': prize_points,
-                    'cost_points': cost_per_try
+                    'success': True, 
+                    'message': f'抽中：{selected_prize["name"]}',
+                    'remaining_points': user_points[0] - cost_per_try + prize_points
                 }
-                
+        
         except Exception as e:
-            return {'success': False, 'message': f'抽奖失败：{str(e)}'}
+            print(f"抽奖失败: {e}")
+            return {'success': False, 'message': '抽奖失败，请稍后重试'}
+
+    def get_exchange_history(self, user_id: str, group_id: str, limit: int = 10) -> List[Tuple]:
+        """获取兑换记录"""
+        try:
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT item_name, price, quantity, exchange_date 
+                    FROM exchange_records 
+                    WHERE user_id = ? AND group_id = ? 
+                    ORDER BY exchange_date DESC 
+                    LIMIT ?
+                ''', (user_id, group_id, limit))
+                return cursor.fetchall()
+        except Exception as e:
+            print(f"获取兑换记录失败: {e}")
+            return []
+
+    def get_lottery_history(self, user_id: str, group_id: str, limit: int = 10) -> List[Tuple]:
+        """获取抽奖记录"""
+        try:
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT prize_name, points_won, cost_points, lottery_date 
+                    FROM lottery_records 
+                    WHERE user_id = ? AND group_id = ? 
+                    ORDER BY lottery_date DESC 
+                    LIMIT ?
+                ''', (user_id, group_id, limit))
+                return cursor.fetchall()
+        except Exception as e:
+            print(f"获取抽奖记录失败: {e}")
+            return []

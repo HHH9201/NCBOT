@@ -1,34 +1,24 @@
-# /home/hjh/BOT/NCBOT/config.yaml
-# 全局配置文件
+# /home/hjh/BOT/NCBOT/plugins/xydj/tool/config.yaml
+# xydj 插件配置文件
 
 # NapCat 配置 (用于伪造合并转发)
 napcat:
-  url: "http://101.35.164.122:3006"
+  url: "http://101.35.164.122:3006/send_group_forward_msg"
   token: "he031701"
 
-# SiliconFlow API 配置 (用于 AI 服务)
+# SiliconFlow API 配置 (用于游戏名翻译)
 siliconflow:
   url: "https://api.siliconflow.cn/v1/chat/completions"
   api_key: "sk-ixmsswryqnmuyifjewdetqnjewdetq"
   model: "moonshotai/Kimi-K2-Instruct-0905"
 
-# GPT 插件专用配置
-gpt:
-  api_key: "sk-kilwgyrrwhpzhqwvugdjliknqcuvvrdbmltlvythobukelfg"
-  model: "Qwen/Qwen2.5-72B-Instruct"
-  voice: "zh-CN-XiaoxiaoNeural"
-
-# 数据库配置
-database:
-  path: "/home/hjh/BOT/NCBOT/mydb/mydb.db"
-
 # 代理配置
 proxy: "http://127.0.0.1:7899"
 
-# ByrutGame 反代地址 (xydj 插件专用)
+# ByrutGame 反代地址
 byrut_base: "https://napcat.1783069903.workers.dev"
 
-# Cookies 配置 (xianyudanji.to) (xydj 插件专用)
+# Cookies 配置 (xianyudanji.to)
 cookies:
   _ok4_: "k7Ss53TvUyeXcsWfWBuG3EDFCuhFBobWvQAsWPR4u7n/Fx1oJgJ582qBY9G6J2s2mjP6qe3nvbV2HpnvLzDf8bo1kDTJie9uhaXfKSSh1qmvZC0OvV41h5ex++Iw3moO"
   ripro_notice_cookie: "1"
@@ -36,14 +26,10 @@ cookies:
   PHPSESSID: "6i65t0q5kvi64v5p33nlfbro59"
   wordpress_logged_in_c1baf48ff9d49282e5cd4050fece6d34: "HHH9201%7C1769238148%7CK8YUKVZt8hwDzhijE3OgWeS6RkiFVt7DCXes67XJYU7%7Ca37d4bca20231e638d52e87fc4bb068622611b9b5b8c2329825d3d0cdbb57862"
 
-# 资源路径配置 (xydj 插件专用)
+# 资源路径配置
 images:
-  qq_img: "TG.png"
-  backup_img: "种子.png"
+  qq_img: "TG.png"  # 相对于 tool 目录
+  backup_img: "种子.png" # 相对于 tool 目录
 
 # 请求头配置
 user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-
-# EdgeTTS 插件配置
-edgetts:
-  enabled_groups: ["695934967"]

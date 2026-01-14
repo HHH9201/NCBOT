@@ -3,17 +3,11 @@
 
 import re
 import json
-import requests
 from .mall_core import PointsMallManager
 
 class MallMessageHandler:
     def __init__(self):
         self.mall_manager = PointsMallManager()
-        self.forward_url = "http://101.35.164.122:3006/send_group_forward_msg"
-        self.forward_headers = {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer he031701'
-        }
     
     def handle_mall_command(self, user_id: str, group_id: str, user_name: str, message_text: str) -> str:
         """处理商城相关命令"""
@@ -181,64 +175,44 @@ class MallMessageHandler:
     def get_exchange_history(self, user_id: str, group_id: str) -> str:
         """获取兑换记录"""
         try:
-            with self.mall_manager.conn:
-                cursor = self.mall_manager.conn.cursor()
-                cursor.execute('''
-                    SELECT item_name, price, quantity, exchange_date 
-                    FROM exchange_records 
-                    WHERE user_id = ? AND group_id = ? 
-                    ORDER BY exchange_date DESC 
-                    LIMIT 10
-                ''', (user_id, group_id))
-                
-                records = cursor.fetchall()
-                
-                if not records:
-                    return "📝 暂无兑换记录"
-                
-                message_lines = ["📋 最近10次兑换记录："]
-                for record in records:
-                    item_name, price, quantity, exchange_date = record
-                    total_cost = price * quantity
-                    message_lines.append(f"• {exchange_date} - {item_name} x{quantity} ({total_cost}积分)")
-                
-                return "\n".join(message_lines)
-                
+            records = self.mall_manager.get_exchange_history(user_id, group_id)
+            
+            if not records:
+                return "📝 暂无兑换记录"
+            
+            message_lines = ["📋 最近10次兑换记录："]
+            for record in records:
+                item_name, price, quantity, exchange_date = record
+                total_cost = price * quantity
+                message_lines.append(f"• {exchange_date} - {item_name} x{quantity} ({total_cost}积分)")
+            
+            return "\n".join(message_lines)
+            
         except Exception as e:
             return f"❌ 获取兑换记录失败：{e}"
     
     def get_lottery_history(self, user_id: str, group_id: str) -> str:
         """获取抽奖记录"""
         try:
-            with self.mall_manager.conn:
-                cursor = self.mall_manager.conn.cursor()
-                cursor.execute('''
-                    SELECT prize_name, points_won, cost_points, lottery_date 
-                    FROM lottery_records 
-                    WHERE user_id = ? AND group_id = ? 
-                    ORDER BY lottery_date DESC 
-                    LIMIT 10
-                ''', (user_id, group_id))
+            records = self.mall_manager.get_lottery_history(user_id, group_id)
+            
+            if not records:
+                return "🎲 暂无抽奖记录"
+            
+            message_lines = ["📋 最近10次抽奖记录："]
+            total_profit = 0
+            
+            for record in records:
+                prize_name, points_won, cost_points, lottery_date = record
+                profit = points_won - cost_points
+                total_profit += profit
                 
-                records = cursor.fetchall()
-                
-                if not records:
-                    return "🎲 暂无抽奖记录"
-                
-                message_lines = ["📋 最近10次抽奖记录："]
-                total_profit = 0
-                
-                for record in records:
-                    prize_name, points_won, cost_points, lottery_date = record
-                    profit = points_won - cost_points
-                    total_profit += profit
-                    
-                    profit_text = f"盈利{profit}" if profit > 0 else f"亏损{-profit}"
-                    message_lines.append(f"• {lottery_date} - {prize_name} ({profit_text})")
-                
-                message_lines.append(f"\n💰 总盈亏：{'盈利' if total_profit > 0 else '亏损'}{abs(total_profit)}积分")
-                
-                return "\n".join(message_lines)
-                
+                profit_text = f"盈利{profit}" if profit > 0 else f"亏损{-profit}"
+                message_lines.append(f"• {lottery_date} - {prize_name} ({profit_text})")
+            
+            message_lines.append(f"\n💰 总盈亏：{'盈利' if total_profit > 0 else '亏损'}{abs(total_profit)}积分")
+            
+            return "\n".join(message_lines)
+            
         except Exception as e:
             return f"❌ 获取抽奖记录失败：{e}"

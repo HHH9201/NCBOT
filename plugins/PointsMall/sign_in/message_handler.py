@@ -1,8 +1,8 @@
 # /home/hjh/BOT/NCBOT/plugins/PointsMall/sign_in/message_handler.py
 # 消息处理模块
+#
 
 import json
-import requests
 import sys
 import os
 
@@ -10,17 +10,13 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.message_formatter import message_formatter
 from utils.error_handler import error_handler
+from common.napcat import napcat_service
 
 from .sign_in_core import SignInManager
 
 class SignInMessageHandler:
     def __init__(self):
         self.sign_manager = SignInManager()
-        self.forward_url = "http://101.35.164.122:3006/send_group_forward_msg"
-        self.forward_headers = {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer he031701'
-        }
     
     def handle_sign_in(self, user_id, group_id, user_name, message_text):
         """处理签到消息"""
@@ -127,39 +123,16 @@ class SignInMessageHandler:
         
         return "\n".join(message_lines)
     
-    def send_long_message(self, group_id, messages):
+    async def send_long_message(self, group_id, messages):
         """发送长消息（使用转发消息）"""
         if isinstance(messages, str):
             messages = [messages]
         
         nodes = []
         for i, msg in enumerate(messages):
-            node = {
-                "type": "node",
-                "data": {
-                    "name": f"签到助手",
-                    "uin": "123456789",
-                    "content": msg
-                }
-            }
-            nodes.append(node)
+            nodes.append(napcat_service.construct_node("10000", "签到助手", msg))
         
-        payload = {
-            "group_id": group_id,
-            "messages": nodes
-        }
-        
-        try:
-            response = requests.post(
-                self.forward_url,
-                headers=self.forward_headers,
-                json=payload,
-                timeout=10
-            )
-            return response.status_code == 200
-        except Exception as e:
-            print(f"发送转发消息失败：{e}")
-            return False
+        return await napcat_service.send_group_forward_msg(group_id, nodes)
     
     def handle_clear_points(self, user_id, group_id, user_name, message_text):
         """处理积分清空命令"""

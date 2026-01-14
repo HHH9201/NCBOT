@@ -1,13 +1,21 @@
 # GPT 插件 - 智能联网Agent + 深度拟人TTS + 阳光晓晓
-import asyncio, httpx, time, re, base64, logging
+import asyncio, time, re, base64, logging
 from typing import Dict, List
 from pathlib import Path
 import tempfile
 import edge_tts
 from datetime import datetime
 
+# 引入全局服务
+from common import ai_service, GLOBAL_CONFIG
+
 # 🌟 新增：搜索库
-from duckduckgo_search import DDGS
+try:
+    from duckduckgo_search import DDGS
+    HAS_DDGS = True
+except ImportError:
+    HAS_DDGS = False
+    logging.warning("缺少 duckduckgo_search 依赖，搜索功能将不可用")
 
 from ncatbot.plugin import BasePlugin, CompatibleEnrollment as bot
 from ncatbot.core.message import GroupMessage, PrivateMessage
@@ -20,18 +28,6 @@ _log = get_log(); _log.setLevel('INFO')
 class GPT(BasePlugin):
     name, version = "GPT_Agent_Voice", "6.0.0"
     
-    # ================= 配置区域 =================
-    API_KEY = "sk-kilwgyrrwhpzhqwvugdjliknqcuvvrdbmltlvythobukelfg" 
-    BASE_URL = "https://api.siliconflow.cn/v1"
-    
-    # 核心模型：Qwen 2.5 72B (智商高，适合做决策和拟人)
-    MODEL_NAME = "Qwen/Qwen2.5-72B-Instruct"
-    
-    # TTS 配置
-    VOICE = "zh-CN-XiaoxiaoNeural"
-    TTS_RATE = "+10%" # 提速10%最自然
-    # ===========================================
-
     sessions: Dict[int, List[Dict]] = {}
     cache: Dict[str, str] = {}
     cache_time: Dict[str, float] = {}
@@ -42,6 +38,12 @@ class GPT(BasePlugin):
         super().__init__(*args, **kwargs)
         self.temp_dir = Path(tempfile.gettempdir()) / "gpt_tts"
         self.temp_dir.mkdir(exist_ok=True)
+        
+        # 加载配置
+        self.api_key = GLOBAL_CONFIG.get("gpt.api_key")
+        self.model_name = GLOBAL_CONFIG.get("gpt.model", "Qwen/Qwen2.5-72B-Instruct")
+        self.voice = GLOBAL_CONFIG.get("gpt.voice", "zh-CN-XiaoxiaoNeural")
+        self.tts_rate = "+10%"
 
     # ---------------- 🧠 1. AI 意图判断大脑 ----------------
     
@@ -65,26 +67,23 @@ class GPT(BasePlugin):
             "例子：'讲个笑话' -> NO"
         )
         
-        payload = {
-            "model": self.MODEL_NAME,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text}
-            ],
-            "max_tokens": 30, # 只需要几个字
-            "temperature": 0.0, # 绝对理性
-            "stream": False
-        }
-
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text}
+        ]
+        
         try:
-            async with httpx.AsyncClient() as cli:
-                r = await cli.post(f"{self.BASE_URL}/chat/completions",
-                                   headers={"Authorization": f"Bearer {self.API_KEY}"},
-                                   json=payload, timeout=5)
-                res = r.json()["choices"][0]["message"]["content"].strip()
-                if "NO" in res.upper() and len(res) < 10:
-                    return "NO"
-                return res
+            res = await ai_service.chat_completions(
+                messages, 
+                model=self.model_name,
+                api_key=self.api_key,
+                temperature=0.0,
+                max_tokens=30
+            )
+            
+            if not res or ("NO" in res.upper() and len(res) < 10):
+                return "NO"
+            return res.strip()
         except Exception:
             return "NO"
 
@@ -152,30 +151,25 @@ class GPT(BasePlugin):
         
         msgs.append({"role": "user", "content": final_prompt})
         
-        payload = {
-            "model": self.MODEL_NAME, 
-            "messages": msgs, 
-            "max_tokens": 512, # 搜索模式下允许稍微长一点
-            "temperature": 0.7, 
-            "top_p": 0.9, 
-            "stream": False
-        }
-        
         try:
-            async with httpx.AsyncClient(follow_redirects=True) as cli:
-                r = await cli.post(f"{self.BASE_URL}/chat/completions",
-                                   headers={"Authorization": f"Bearer {self.API_KEY}",
-                                            "Content-Type": "application/json"},
-                                   json=payload,
-                                   timeout=httpx.Timeout(connect=5, read=15, write=5, pool=2))
-                r.raise_for_status()
-                res = r.json()["choices"][0]["message"]["content"].strip()
-                cleaned_res = self._clean_text(res)
-                
-                if not search_context:
-                    self.cache[key] = cleaned_res; self.cache_time[key] = time.time()
-                
-                return cleaned_res
+            res = await ai_service.chat_completions(
+                msgs,
+                model=self.model_name,
+                api_key=self.api_key,
+                temperature=0.7,
+                max_tokens=512,
+                top_p=0.9
+            )
+            
+            if not res:
+                raise Exception("API返回空内容")
+
+            cleaned_res = self._clean_text(res)
+            
+            if not search_context:
+                self.cache[key] = cleaned_res; self.cache_time[key] = time.time()
+            
+            return cleaned_res
         except Exception as e: 
             _log.error(f"API请求失败: {e}")
             return "哎呀，脑子卡壳了，等会儿再理你。"

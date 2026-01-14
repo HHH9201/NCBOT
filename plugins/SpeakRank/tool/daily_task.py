@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from ncatbot.core.api import BotAPI
+from common.db import db_manager
 
 _log = logging.getLogger(__name__)
 
@@ -81,8 +82,7 @@ class DailyTaskManager:
                 return
             
             # 获取所有有数据的群组
-            import sqlite3
-            with sqlite3.connect(self.plugin.db_path) as conn:
+            with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('SELECT DISTINCT group_id FROM daily_speak_rank')
                 group_ids = [row[0] for row in cursor.fetchall()]

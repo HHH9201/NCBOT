@@ -15,13 +15,13 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.config_manager import ConfigManager
 from utils.error_handler import error_handler, error_decorator
+from common.db import db_manager
 
 class SignInManager:
     """签到积分管理器"""
     
-    def __init__(self, db_path: str = "/home/hjh/BOT/NCBOT/mydb/mydb.db"):
+    def __init__(self):
         """初始化签到管理器"""
-        self.db_path = db_path
         self.config_manager = ConfigManager()
         self.init_database()
     
@@ -59,7 +59,7 @@ class SignInManager:
     
     def init_database(self):
         """初始化数据库表并创建索引"""
-        with sqlite3.connect(self.db_path) as conn:
+        with db_manager.get_connection() as conn:
             cursor = conn.cursor()
             
             # 签到记录表
@@ -125,17 +125,16 @@ class SignInManager:
     def get_user_points(self, user_id, group_id):
         """获取用户当前积分"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT total_points, consecutive_days, last_sign_date 
-                FROM user_points 
-                WHERE user_id = ? AND group_id = ?
-            ''', (user_id, group_id))
-            
-            result = cursor.fetchone()
-            conn.close()
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute('''
+                    SELECT total_points, consecutive_days, last_sign_date 
+                    FROM user_points 
+                    WHERE user_id = ? AND group_id = ?
+                ''', (user_id, group_id))
+                
+                result = cursor.fetchone()
             
             if result:
                 return {

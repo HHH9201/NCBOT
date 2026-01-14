@@ -1,8 +1,7 @@
-import httpx
 import logging
-import yaml
 from ncatbot.plugin import BasePlugin, CompatibleEnrollment
 from ncatbot.core import GroupMessage
+from common import napcat_service
 
 bot = CompatibleEnrollment
 logging.basicConfig(level=logging.INFO)
@@ -13,19 +12,6 @@ class FL(BasePlugin):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.load_config()
-
-    def load_config(self):
-        """加载配置文件"""
-        try:
-            with open("/home/hjh/BOT/NCBOT/config.yaml", "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f)
-            # 使用固定的token，与xydj插件保持一致
-            self.api_token = "he031701"
-            logging.info(f"已加载API令牌: {self.api_token}")
-        except Exception as e:
-            logging.error(f"加载配置文件失败: {e}")
-            self.api_token = "he031701"  # 默认值
 
     # ---------- 关键词映射 ----------
     IMAGE_API = {
@@ -65,12 +51,7 @@ class FL(BasePlugin):
     async def send_forward(self, group_id: int, url: str,
                            media_type: str, title: str = "合集",
                            user_id: str = "80000000", nickname: str = "匿名用户"):
-        api = "http://101.35.164.122:3006/send_group_forward_msg"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_token}"
-        }
-
+        
         # 构建API关键词信息文本
         api_info = "=== 图片关键词-一次20个 ===\n"
         api_info += ", ".join(self.IMAGE_API.keys()) + "\n"
@@ -143,28 +124,15 @@ class FL(BasePlugin):
                     }
                 })
 
-        payload = {
-            "group_id": group_id,
-            "messages": nodes,
-            "source": title,
-            "summary": summary,
-            "prompt": f"[{title}]",
-            "news": [{"text": "点击查看详情"}]
-        }
-
-        try:
-            # 增加超时时间到30秒，避免合并转发消息处理时间过长导致的超时
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                r = await client.post(api, headers=headers, json=payload)
-                logging.info(f"[Forward{count}] {r.status_code} {r.text}")
-        except httpx.ReadTimeout:
-            logging.warning(f"请求超时(30秒): {api} - 但可能仍在后台处理中")
-        except httpx.ConnectError:
-            logging.error(f"连接错误: {api}")
-        except httpx.RequestError as e:
-            logging.error(f"请求错误: {e}")
-        except Exception as e:
-            logging.exception("发送失败")
+        # 使用全局 NapCat 服务发送
+        await napcat_service.send_group_forward_msg(
+            group_id=group_id,
+            nodes=nodes,
+            source=title,
+            summary=summary,
+            prompt=f"[{title}]",
+            news=[{"text": "点击查看详情"}]
+        )
 
     # ---------- 触发器 ----------
     @bot.group_event

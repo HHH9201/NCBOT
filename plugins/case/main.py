@@ -1,8 +1,8 @@
 from ncatbot.plugin import BasePlugin
 from ncatbot.core import GroupMessage
 from ncatbot.plugin_system.builtin_plugin.unified_registry import UnifiedRegistry
-import aiohttp
 import asyncio
+from common.napcat import napcat_service
 
 class CasePlugin(BasePlugin):
     name = "case"
@@ -10,32 +10,13 @@ class CasePlugin(BasePlugin):
 
     async def _send_fake_forward_msg(self, group_id: int, content: str):
         """真正发消息的异步实现"""
-        url = "http://localhost:3006/send_group_forward_msg"
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer he031701'
-        }
-        messages = [{
-            "type": "node",
-            "data": {
-                "name": "系统消息",
-                "uin": "10000",
-                "content": content
-            }
-        }]
-        payload = {"group_id": group_id, "messages": messages}
-
-        print(f"[case] 请求 payload: {payload}")
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json=payload) as resp:
-                    text = await resp.text()
-                    print(f"[case] 返回状态码: {resp.status}, 原始返回: {text}")
-                    result = await resp.json()
-                    if result.get("status") == "ok":
-                        print(f"[case] 成功发送伪造合并转发消息到群 {group_id}")
-                    else:
-                        print(f"[case] 发送失败: {result}")
+            node = napcat_service.construct_node("10000", "系统消息", content)
+            success = await napcat_service.send_group_forward_msg(group_id, [node])
+            if success:
+                print(f"[case] 成功发送伪造合并转发消息到群 {group_id}")
+            else:
+                print(f"[case] 发送失败")
         except Exception as e:
             print(f"[case] 发送伪造合并转发消息失败: {e}")
 

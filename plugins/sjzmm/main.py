@@ -12,6 +12,9 @@ from ncatbot.core.message import GroupMessage, PrivateMessage
 from ncatbot.core.message import MessageChain
 from ncatbot.core.event.message_segment.message_segment import Text, Reply
 
+# 引入全局配置
+from common.config import GLOBAL_CONFIG
+
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)

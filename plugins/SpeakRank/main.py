@@ -18,7 +18,6 @@
   - 测试昨日榜：测试发送昨日排行榜（管理员功能）
 """
 import logging
-import sqlite3
 import asyncio
 import time
 from pathlib import Path
@@ -30,6 +29,7 @@ from ncatbot.plugin import BasePlugin, CompatibleEnrollment
 from ncatbot.core.message import GroupMessage
 from ncatbot.core.event.message_segment.message_segment import Text, At
 from .tool.daily_task import DailyTaskManager
+from common.db import db_manager
 
 # 获取日志记录器
 _log = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ class SpeakRank(BasePlugin):
     def _init_database(self):
         """初始化数据库表结构"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 # 总发言统计表
                 cursor.execute('''
@@ -124,7 +124,7 @@ class SpeakRank(BasePlugin):
     def _load_data(self):
         """从数据库加载发言数据到内存缓存"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 # 加载总发言数据
                 cursor.execute('SELECT group_id, user_id, speak_count FROM speak_rank')
@@ -150,7 +150,7 @@ class SpeakRank(BasePlugin):
     def _save_speak_data(self, group_id: str, user_id: str, count: int):
         """保存或更新用户发言数据"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 # 保存总发言数据
                 cursor.execute('''
@@ -182,7 +182,7 @@ class SpeakRank(BasePlugin):
             date_filter: 日期过滤，None表示总榜，'today'表示今日，'yesterday'表示昨日
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 if date_filter is None:

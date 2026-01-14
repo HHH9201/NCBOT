@@ -14,6 +14,7 @@ from sign_in.message_handler import SignInMessageHandler
 from mall.message_handler import MallMessageHandler
 from utils.help_generator import help_generator
 from utils.error_handler import error_handler
+from common.napcat import napcat_service
 
 # admin_tools模块已禁用，如需启用请取消注释下方导入
 # from utils.admin_tools import admin_tools
@@ -47,7 +48,7 @@ class PointsMall(BasePlugin):
                 return
             
             # 处理商城相关消息
-            result = self.mall_handler.handle_mall_message(user_id, group_id, user_name, message_text)
+            result = self.mall_handler.handle_mall_command(user_id, group_id, user_name, message_text)
             
             if result:
                 await self._send_reply(msg, result)
@@ -126,6 +127,18 @@ class PointsMall(BasePlugin):
     
     async def _send_reply(self, msg: GroupMessage, content: str):
         """发送回复消息"""
+        # 检查消息长度，如果超过阈值则使用转发消息
+        if len(content) > 200:
+            # 尝试获取机器人QQ号，默认10000
+            bot_uin = "10000"
+            
+            nodes = [napcat_service.construct_node(bot_uin, "PointsMall", content)]
+            
+            # 发送转发消息
+            success = await napcat_service.send_group_forward_msg(msg.group_id, nodes)
+            if success:
+                return
+
         # 使用消息格式化器优化消息格式
         from utils.message_formatter import message_formatter
         formatted_content = message_formatter.truncate_message(content)
