@@ -8,11 +8,6 @@ import os
 import json
 import asyncio
 import logging
-import yaml
-import string
-import base64
-import aiohttp
-import aiofiles
 import urllib3
 from pathlib import Path
 from bs4 import BeautifulSoup
@@ -22,15 +17,22 @@ from ncatbot.core.message import GroupMessage
 from ncatbot.core import Text, At, Reply, MessageChain, Image
 
 # 引入全局服务和配置
-from common import napcat_service, ai_service, GLOBAL_CONFIG
+from common import (
+    napcat_service, ai_service, GLOBAL_CONFIG,
+    image_to_base64, normalize_text, convert_roman_to_arabic,
+    load_yaml, save_yaml, clean_filename,
+    http_client, DEFAULT_HEADERS
+)
 
 # 配置更清爽的日志格式，去掉进程和线程信息
+logging.basicConfig(
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    level=logging.INFO
+)
 
 # -------------------- 提取配置 --------------------
-PROXY = GLOBAL_CONFIG.get('proxy')
 BYRUT_BASE = GLOBAL_CONFIG.get('byrut_base')
 COOKIES = GLOBAL_CONFIG.get('cookies', {})
-HEADERS = {"User-Agent": GLOBAL_CONFIG.get('user_agent', "Mozilla/5.0")}
 
 # 图片路径处理
 TOOL_DIR = Path(__file__).parent / "tool"
@@ -41,74 +43,41 @@ bot = CompatibleEnrollment
 
 urllib3.disable_warnings()
 
-CACHE_FILE = TOOL_DIR / "game_name_cache.yaml"
-
-# -------------------- 工具函数 --------------------
-def load_cache():
-    try:
-        if CACHE_FILE.exists():
-            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f) or {}
-    except Exception as e:
-        logging.warning(f"加载缓存失败: {e}")
-    return {}
-
-def save_cache(c):
-    try:
-        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-            yaml.dump(c, f, allow_unicode=True, sort_keys=True)
-    except Exception as e:
-        logging.error(f"保存缓存失败: {e}")
-
-def normalize(txt):
-    for p in string.punctuation:
-        txt = txt.replace(p, " ")
-    return " ".join(txt.lower().split())
-
-# ------------------------------------------------------------------
-# 2. 把英文关键词翻译成中文官方名（供界面展示，不用于搜索）
-# ------------------------------------------------------------------
-_title_cache = {}          # 重启即失效的内存缓存，如需持久化可改 redis
+CACHE_FILE = Path(__file__).parent / "game_name_cache.yaml"
+_title_cache = load_yaml(CACHE_FILE)
 
 async def translate_to_chinese_title(eng: str) -> str:
     """
     输入英文关键词，返回 Steam 官方中文名；失败则回退原文。
-    缓存 1 小时，避免重复请求。
     """
     if not eng:
-        return  eng
+        return eng
 
-    global  _title_cache
+    global _title_cache
     if eng in _title_cache:
         return _title_cache[eng]
 
     system_prompt = "你是 Steam 中文名称翻译助手，只输出 steam 游戏官方中文名，其余任何文字都不要说。"
     prompt = f"{eng} 的 Steam 官方游戏中文名是什么"
     
-    # 使用全局 AI 服务
-    # 注意：ai_service 内部已经处理了代理配置 (如果在初始化时传入或配置了)
-    # 但我们现在的 ai_service 封装比较简单，如果要传 proxy，需要调用 chat_completions
-    # 或者我们更新 ai_service 让它自动读取全局代理配置
-    
-    # 这里我们直接调用 simple_chat，假设 ai_service 已经配置好或者不需要特定代理
-    # 如果需要代理，我们应该改进 ai_service
-    
-    # 实际上，xydj 之前用了 PROXY。我们需要确认 ai_service 是否使用了 PROXY。
-    # 我们的 ai_service.simple_chat 调用 chat_completions，后者有 proxy 参数。
-    # 但 simple_chat 没有透传 proxy。
-    # 我们应该修改 ai_service 或者在这里调用 chat_completions。
-    
-    # 既然我们已经有了 PROXY 变量 (从 GLOBAL_CONFIG 获取)，我们可以传给 ai_service。
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": prompt}
-    ]
-    zh = await ai_service.chat_completions(messages, temperature=0.1, max_tokens=30, proxy=PROXY)
-    
-    if not zh:
-        zh = eng          # 失败就回退原文
+    try:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ]
+        # 调用AI服务进行翻译
+        # 注意：这里需要传递正确的参数，原代码中的PROXY变量已被移除，需要从GLOBAL_CONFIG获取
+        proxy = GLOBAL_CONFIG.get('proxy')
+        zh = await ai_service.chat_completions(messages, temperature=0.1, max_tokens=30, proxy=proxy)
+        
+        if not zh:
+            zh = eng
+    except Exception as e:
+        logging.error(f"翻译失败: {e}")
+        zh = eng
 
-    _title_cache[eng] =  zh
+    _title_cache[eng] = zh
+    save_yaml(CACHE_FILE, _title_cache)
     return zh
 
 # ------------------------------------------------------------------
@@ -162,15 +131,7 @@ def extract_english_name(title: str) -> tuple[str, str]:
         english_part = ' '.join(words[:4])
     
     # 罗马→阿拉伯数字（仅英文关键词）
-    roman_to_arabic = {
-        'I': '1', 'II': '2', 'III': '3', 'IV': '4', 'V': '5',
-        'VI': '6', 'VII': '7', 'VIII': '8', 'IX': '9', 'X': '10',
-        'XI': '11', 'XII': '12', 'XIII': '13', 'XIV': '14', 'XV': '15',
-        'XVI': '16', 'XVII': '17', 'XVIII': '18', 'XIX': '19', 'XX': '20'
-    }
-    # 整词替换，忽略大小写
-    for roman, arabic in roman_to_arabic.items():
-        english_part = re.sub(rf'\b{roman}\b', arabic, english_part, flags=re.I)
+    english_part = convert_roman_to_arabic(english_part)
     
     return english_part.strip(), chinese_display.strip()
 
@@ -339,172 +300,54 @@ async def extract_download_info(game_url: str):
         return [f"解析游戏信息时出错: {e}"]
 
 # -------------------- 网络请求配置和错误处理 ----------
-# 代理配置检查
-if PROXY and not PROXY.startswith(('http://', 'https://', 'socks4://', 'socks5://')):
-    logging.warning(f"[Network] 代理配置格式可能不正确: {PROXY}")
-    PROXY = None  # 禁用可能有问题的代理
 
-# 增强的请求头配置（移除Brotli支持以避免解码错误）
-# 添加更完整的请求头以模拟真实浏览器，避免403错误
-HEADERS.update({
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-    'Accept-Encoding': 'gzip, deflate',  # 移除br(brotli)支持
-    'Cache-Control': 'no-cache',
-    'Pragma': 'no-cache',
-    'Referer': "https://byrutgame.org",  # 添加Referer头
-    'Origin': "https://byrutgame.org",  # 添加Origin头
-    'DNT': '1',  # 不追踪请求
-    'Connection': 'keep-alive',  # 保持连接
-    'Upgrade-Insecure-Requests': '1',  # 升级不安全请求
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'same-origin',
-    'Sec-Fetch-User': '?1'
-})
 
 # -------------------- ByrutGame 搜索（异步+代理+SSL 关闭） ----------
 async def search_byrut(name: str) -> list:
     """返回 [{href, title, category}, ...] 最多3条"""
-    params = {"do": "search", "subaction": "search", "story": name}
-    url = "https://byrutgame.org/index.php"
-    
-    # 重试机制配置
-    max_retries = 3
-    retry_delay = 2
-    text = None  # 用于存储成功获取的文本
-    
-    for attempt in range(max_retries):
-        connector = aiohttp.TCPConnector(ssl=False, force_close=True)
-        timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_connect=10, sock_read=10)
-        session = None
-        
-        try:
-            # 每次重试都创建全新的session和connector，避免session closed问题
-            # 为了避免403，我们传递一个空的cookies字典，让服务器认为我们接受cookies
-            session = aiohttp.ClientSession(
-                connector=connector, 
-                timeout=timeout, 
-                headers=HEADERS,
-                cookies={}  # 添加空cookies，避免服务器拒绝无cookies请求
-            )
-            
-            # 构建请求参数
-            request_params = {"params": params, "timeout": timeout}
-            if PROXY:
-                request_params["proxy"] = PROXY
-            
-            # 打印调试日志
-            full_url = f"{url}?{ '&'.join([f'{k}={v}' for k, v in params.items()]) }"
-            logging.debug(f"[Byrut] 发送请求：{full_url}")
-            logging.debug(f"[Byrut] 请求headers：{HEADERS}")
-            logging.debug(f"[Byrut] 请求proxy：{PROXY}")
-            
-            async with session.get(url, **request_params) as resp:
-                # 打印响应日志
-                logging.debug(f"[Byrut] 响应状态码：{resp.status}")
-                logging.debug(f"[Byrut] 响应headers：{dict(resp.headers)}")
-                
-                if resp.status == 403:
-                    logging.warning(f"[Byrut] 403 Forbidden (尝试 {attempt + 1}/{max_retries})")
-                    # 尝试获取错误响应内容，分析403原因
-                    error_content = await resp.text()
-                    logging.debug(f"[Byrut] 403错误响应内容：{error_content[:500]}...")
-                    
-                    # 403时尝试更换User-Agent
-                    if attempt < max_retries - 1:
-                        # 轮换User-Agent
-                        import random
-                        user_agents = [
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/121.0",
-                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
-                        ]
-                        # 创建临时headers副本，轮换User-Agent
-                        temp_headers = HEADERS.copy()
-                        temp_headers['User-Agent'] = random.choice(user_agents)
-                        session.headers.update(temp_headers)
-                        logging.debug(f"[Byrut] 尝试更换User-Agent: {temp_headers['User-Agent']}")
-                        
-                        await asyncio.sleep(retry_delay * (attempt + 1))  # 指数退避
-                        continue
-                    return []          # 空 = 未找到
-                elif resp.status != 200:
-                    logging.warning(f"[Byrut] 反代返回状态码：{resp.status} (尝试 {attempt + 1}/{max_retries})")
-                    # 尝试获取错误响应内容
-                    error_content = await resp.text()
-                    logging.debug(f"[Byrut] 错误响应内容：{error_content[:500]}...")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(retry_delay)
-                        continue
-                    return []          # 空 = 未找到
-                text = await resp.text()
-                logging.debug(f"[Byrut] 成功获取响应，长度：{len(text)} 字符")
-                break  # 成功获取数据，跳出重试循环
-                
-        except aiohttp.ClientConnectorError as e:
-            logging.error(f"[Byrut] 连接错误 (尝试 {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay * (attempt + 1))  # 指数退避
-                continue
-            # 最后一次尝试失败，返回空结果
-            logging.error("[Byrut] 所有重试尝试失败，返回空结果")
-            return []
-        except asyncio.TimeoutError as e:
-            logging.error(f"[Byrut] 请求超时 (尝试 {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay)
-                continue
-            return []
-        except aiohttp.ClientPayloadError as e:
-            logging.error(f"[Byrut] 数据传输错误 (尝试 {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay)
-                continue
-            return []
-        except Exception as e:
-            logging.exception(f"[Byrut] 搜索请求失败 (尝试 {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay)
-                continue
-            return []
-        finally:
-            # 确保session被正确关闭
-            if session and not session.closed:
-                await session.close()
-            # 确保connector被正确关闭
-            if connector and not connector.closed:
-                await connector.close()
-    
-    # 如果没有获取到文本，返回空结果
-    if text is None:
+    if not name:
         return []
 
-    soup = BeautifulSoup(text, "html.parser")
-    key = normalize(name)
-    results, seen = [], set()
-    for a in soup.select("a.search_res"):
-        href = a["href"]
-        if "po-seti" not in href.lower():   # ← 只留联机
-            continue
-        title_tag = a.select_one(".search_res_title")
-        if not title_tag:
-            continue
-        title = title_tag.get_text(strip=True)
-        if key not in normalize(title):
-            continue
-        if href in seen:
-            continue
-        seen.add(href)
-        category = (
-            "联机版"
-            if any(k in href.lower() for k in ["po-seti", "onlayn", "multiplayer"])
-            else "单机版"
-        )
-        results.append({"href": href, "title": title, "category": category})
-    return results[:3]   # 最多3条
+    url = f"{BYRUT_BASE}/index.php?do=search"
+    params = {
+        "subaction": "search",
+        "story": name
+    }
+    
+    try:
+        html = await http_client.get_text(url, params=params, verify_ssl=False)
+        if not html:
+            return []
+
+        soup = BeautifulSoup(html, "html.parser")
+        key = normalize_text(name)
+        results, seen = [], set()
+        
+        for a in soup.select("a.search_res"):
+            href = a["href"]
+            if "po-seti" not in href.lower():   # ← 只留联机
+                continue
+            title_tag = a.select_one(".search_res_title")
+            if not title_tag:
+                continue
+            title = title_tag.get_text(strip=True)
+            if key not in normalize_text(title):
+                continue
+            if href in seen:
+                continue
+            seen.add(href)
+            category = (
+                "联机版"
+                if any(k in href.lower() for k in ["po-seti", "onlayn", "multiplayer"])
+                else "单机版"
+            )
+            results.append({"href": href, "title": title, "category": category})
+            
+        return results[:3]   # 最多3条
+
+    except Exception as e:
+        logging.error(f"[Byrut] 搜索异常: {e}")
+        return []
 
 
 # -------------------- 备用方案函数 --------------------
@@ -516,7 +359,7 @@ def _apply_backup_solution(item: dict, error_type: str) -> None:
     backup_torrent_url = item.get('href', '')
     
     # 检查备用图片是否存在
-    backup_image = "/home/hjh/BOT/NCBOT/plugins/xydj/tool/种子.png"
+    backup_image = str(TOOL_DIR / "种子.png")
     if not os.path.exists(backup_image):
         # 如果文件不存在，使用文字标识
         backup_image = None
@@ -535,133 +378,25 @@ async def fetch_byrut_detail(item: dict) -> None:
     href = item["href"]
     # 检查是否已经是正确的链接
     if href.startswith("https://byrutgame.org"):
-        # 已经是正确链接，直接使用
         proxy_url = href
     else:
-        # 不是正确链接，转换为正确链接
         detail_path = href.replace("https://napcat.1783069903.workers.dev", "")
         if not detail_path.startswith("/"):
             detail_path = "/" + detail_path
         proxy_url = f"https://byrutgame.org{detail_path}"
     
-    # 重试机制配置
-    max_retries = 3
-    retry_delay = 2
-    html = None
-    
-    for attempt in range(max_retries):
-        connector = aiohttp.TCPConnector(ssl=False, force_close=True)
-        timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_connect=10, sock_read=10)
-        session = None
+    try:
+        # 使用 http_client 获取内容，自动处理重试和 User-Agent 轮换
+        # 传递 verify_ssl=False 以避免 SSL 错误
+        html = await http_client.get_text(proxy_url, verify_ssl=False)
         
-        try:
-            # 每次重试都创建全新的session和connector
-            # 为了避免403，我们传递一个空的cookies字典，让服务器认为我们接受cookies
-            session = aiohttp.ClientSession(
-                connector=connector, 
-                timeout=timeout, 
-                headers=HEADERS,
-                cookies={}  # 添加空cookies，避免服务器拒绝无cookies请求
-            )
-            
-            # 构建请求参数
-            request_params = {"timeout": timeout}
-            if PROXY:
-                request_params["proxy"] = PROXY
-            
-            # 打印调试日志
-            logging.debug(f"[Byrut] 发送详情页请求：{proxy_url}")
-            logging.debug(f"[Byrut] 请求headers：{HEADERS}")
-            logging.debug(f"[Byrut] 请求proxy：{PROXY}")
-            
-            async with session.get(proxy_url, **request_params) as resp:
-                # 打印响应日志
-                logging.debug(f"[Byrut] 详情页响应状态码：{resp.status}")
-                logging.debug(f"[Byrut] 详情页响应headers：{dict(resp.headers)}")
-                
-                if resp.status == 403:
-                    logging.warning(f"[Byrut] 详情页403 Forbidden (尝试 {attempt + 1}/{max_retries})")
-                    # 尝试获取错误响应内容，分析403原因
-                    error_content = await resp.text()
-                    logging.debug(f"[Byrut] 详情页403错误响应内容：{error_content[:500]}...")
-                    
-                    # 403时尝试更换User-Agent
-                    if attempt < max_retries - 1:
-                        # 轮换User-Agent
-                        import random
-                        user_agents = [
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/121.0",
-                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
-                        ]
-                        # 创建临时headers副本，轮换User-Agent
-                        temp_headers = HEADERS.copy()
-                        temp_headers['User-Agent'] = random.choice(user_agents)
-                        session.headers.update(temp_headers)
-                        logging.debug(f"[Byrut] 尝试更换User-Agent: {temp_headers['User-Agent']}")
-                        
-                        await asyncio.sleep(retry_delay * (attempt + 1))  # 指数退避
-                        continue
-                    # 最后一次尝试失败，使用备用方案
-                    _apply_backup_solution(item, "HTTP 403 Forbidden错误")
-                    return
-                elif resp.status != 200:
-                    logging.warning(f"[Byrut] 详情页状态码：{resp.status} (尝试 {attempt + 1}/{max_retries})")
-                    # 尝试获取错误响应内容
-                    error_content = await resp.text()
-                    logging.debug(f"[Byrut] 详情页错误响应内容：{error_content[:500]}...")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(retry_delay)
-                        continue
-                    # 最后一次尝试失败，使用备用方案
-                    _apply_backup_solution(item, "HTTP状态码错误")
-                    return
-                html = await resp.text()
-                logging.debug(f"[Byrut] 成功获取详情页响应，长度：{len(html)} 字符")
-                break  # 成功获取数据，跳出重试循环
-                
-        except aiohttp.ClientConnectorError as e:
-            logging.error(f"[Byrut] 详情页连接错误 (尝试 {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay * (attempt + 1))  # 指数退避
-                continue
-            # 最后一次尝试失败，使用备用方案
-            _apply_backup_solution(item, "连接错误")
+        if not html:
+            _apply_backup_solution(item, "无法获取页面内容")
             return
-        except asyncio.TimeoutError as e:
-            logging.error(f"[Byrut] 详情页请求超时 (尝试 {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay)
-                continue
-            _apply_backup_solution(item, "请求超时")
-            return
-        except aiohttp.ClientPayloadError as e:
-            logging.error(f"[Byrut] 详情页数据传输错误 (尝试 {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay)
-                continue
-            _apply_backup_solution(item, "数据传输错误")
-            return
-        except Exception as e:
-            logging.exception(f"[Byrut] 详情页请求失败 (尝试 {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay)
-                continue
-            _apply_backup_solution(item, "未知错误")
-            return
-        finally:
-            # 确保session被正确关闭
-            if session and not session.closed:
-                await session.close()
-            # 确保connector被正确关闭
-            if connector and not connector.closed:
-                await connector.close()
-    
-    # 如果没有获取到HTML，使用备用方案
-    if html is None:
-        _apply_backup_solution(item, "无法获取页面内容")
+
+    except Exception as e:
+        logging.error(f"[Byrut] 详情页请求异常: {e}")
+        _apply_backup_solution(item, f"请求异常: {e}")
         return
 
     soup = BeautifulSoup(html, "html.parser")
@@ -709,21 +444,6 @@ async def fetch_byrut_detail(item: dict) -> None:
     item.update({"update_time": update_time, "torrent_url": torrent_url})
 
 
-def image_to_base64(image_path):
-    """将图片文件转换为base64编码字符串"""
-    try:
-        if not os.path.exists(image_path):
-            logging.warning(f"图片文件不存在: {image_path}")
-            return None
-        
-        with open(image_path, 'rb') as f:
-            image_data = f.read()
-            base64_encoded = base64.b64encode(image_data).decode('utf-8')
-            return f"data:image/png;base64,{base64_encoded}"
-    except Exception as e:
-        logging.error(f"图片转base64失败: {e}")
-        return None
-
 async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: list[str], 联机_lines: list[str], user_id: str = "0", user_nickname: str = "游戏助手"):
     """一次性构造：赞助 + 单机版 + 联机版（节点内不再写游戏名）"""
     nodes = []
@@ -741,14 +461,18 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
     # 从消息中提取游戏名称，用于标题和摘要
     game_title = ""
     for line in 单机_lines:
-        if "游戏名字" in line:
-            game_title = line.split("游戏名字：")[1].strip()
-            break
+        if "游戏名字：" in line:
+            parts = line.split("游戏名字：")
+            if len(parts) > 1:
+                game_title = parts[1].strip()
+                break
     if not game_title:
         for line in 联机_lines:
-            if "游戏名字" in line:
-                game_title = line.split("游戏名字：")[1].strip()
-                break
+            if "游戏名字：" in line:
+                parts = line.split("游戏名字：")
+                if len(parts) > 1:
+                    game_title = parts[1].strip()
+                    break
     if not game_title:
         game_title = "游戏资源"
 
@@ -823,10 +547,17 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
         nodes=nodes,
         source=game_title,
         summary=summary,
-        prompt=f"[{game_title}]",
+        prompt=f"[{game_title[:30]}]",
         news=[{"text": "点击查看游戏资源详情"}]
     )
 
+
+class SearchSession:
+    def __init__(self, user_id, games, task=None):
+        self.user_id = user_id
+        self.games = games
+        self.task = task
+        self.processing = False
 
 # -------------------- 插件主类 --------------------
 class Xydj(BasePlugin):
@@ -835,29 +566,24 @@ class Xydj(BasePlugin):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.message_queue = asyncio.Queue()
-        self.waiting_for_reply = False
-        self.processing = False
-        self.user_who_sent_command = None
-        self.filtered_games = []
-        self.timer_task = None
-        self._cache = load_cache()
+        self.sessions = {}  # group_id -> SearchSession
 
     async def countdown(self, msg, group_id):
         await asyncio.sleep(40)
-        if self.waiting_for_reply:
-            self._cleanup()
+        session = self.sessions.get(group_id)
+        if session and not session.processing:
+            self._cleanup(group_id)
             await self.api.post_group_msg(
                 group_id=group_id,
                 rtf=MessageChain([Reply(msg.message_id), Text("等待超时，操作已取消。请重新搜索")])
             )
 
-    def _cleanup(self):
-        self.waiting_for_reply = False
-        self.processing = False
-        if self.timer_task:
-            self.timer_task.cancel()
-            self.timer_task = None
+    def _cleanup(self, group_id):
+        if group_id in self.sessions:
+            session = self.sessions[group_id]
+            if session.task:
+                session.task.cancel()
+            del self.sessions[group_id]
 
     async def process_game_resource(self, game, msg):
         """统一处理游戏资源获取和发送的函数（并行处理单机版和联机版资源）"""
@@ -970,38 +696,54 @@ class Xydj(BasePlugin):
 
     @bot.group_event
     async def on_group_message(self, msg: GroupMessage):
-        await self.message_queue.put(msg)
-        if self.waiting_for_reply and msg.user_id == self.user_who_sent_command:
-            if self.processing:
+        # 获取当前群组的会话
+        session = self.sessions.get(msg.group_id)
+        
+        # 检查是否是等待回复的状态，并且发送者是命令发起人
+        if session and msg.user_id == session.user_id:
+            if session.processing:
                 return
+            
             choice = re.sub(r'\[CQ:[^\]]+\]', '', msg.raw_message).strip()
+            
+            # 取消操作
             if choice == "0":
                 await self.api.post_group_msg(
                     group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text("操作已取消。")])
                 )
-                self._cleanup()
+                self._cleanup(msg.group_id)
                 return
-            if not choice.isdigit() or not 1 <= int(choice) <= len(self.filtered_games):
+            
+            # 验证选择
+            if not choice.isdigit() or not 1 <= int(choice) <= len(session.games):
                 await self.api.post_group_msg(
                     group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text("回复错误，操作已取消。请重新搜索游戏。")])
                 )
-                self._cleanup()
+                self._cleanup(msg.group_id)
                 return
+            
             choice = int(choice)
             await self.api.post_group_msg(
                 group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"已选择第 {choice} 个游戏，请等待大概1分钟！！！")])
             )
-            self.processing = True
-            self._cleanup()
+            
+            session.processing = True
+            # 取消超时计时器
+            if session.task:
+                session.task.cancel()
+                session.task = None
+            
             try:
-                game = self.filtered_games[choice - 1]
+                game = session.games[choice - 1]
                 await self.process_game_resource(game, msg)
             except Exception as e:
                 await self.api.post_group_msg(
                     group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"处理失败: {str(e)}")])
                 )
             finally:
-                self._cleanup()
+                self._cleanup(msg.group_id)
+        
+        # 处理新的搜索命令
         elif msg.raw_message.strip().startswith("搜索"):
             game_name = msg.raw_message.strip()[2:].strip()
             if not game_name:
@@ -1009,6 +751,7 @@ class Xydj(BasePlugin):
                     group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text("使用方法：搜索+游戏名称，例如：搜索 文明6")])
                 )
                 return
+            
             try:
                 text_result, games = await search_game(game_name)
                 if not text_result:
@@ -1022,19 +765,21 @@ class Xydj(BasePlugin):
                     await self.api.post_group_msg(
                         group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text("搜索到1个游戏，自动为您获取资源信息，请等待大概1分钟！！！")])
                     )
-                    # 直接处理单个游戏
                     await self.process_single_game(games[0], msg)
                     return
                 
-                # 多个游戏结果，需要用户选择（直接发送文本，不发送图片）
+                # 多个游戏结果，创建新会话
                 await self.api.post_group_msg(
                     group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"🎯 发现 {len(games)} 款游戏\n{text_result}\n⏰ 30秒内回复序号选择 | 回复 0 取消操作")])
                 )
-                self.waiting_for_reply = True
-                self.user_who_sent_command = msg.user_id
-                self.filtered_games = games
-                self.timer_task = asyncio.create_task(self.countdown(msg, msg.group_id))
+                
+                # 创建会话并保存
+                session = SearchSession(msg.user_id, games)
+                session.task = asyncio.create_task(self.countdown(msg, msg.group_id))
+                self.sessions[msg.group_id] = session
+                
             except Exception as e:
+                logging.exception(f"搜索出错: {e}")
                 await self.api.post_group_msg(
                     group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text("发生错误，请稍后重试。")])
                 )

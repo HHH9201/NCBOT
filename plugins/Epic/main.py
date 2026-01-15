@@ -1,7 +1,6 @@
 # /home/hjh/BOT/NCBOT/plugins/Epic/main.py
 # Epic喜加一插件 - 获取Epic Games免费游戏信息
 import asyncio
-import httpx
 import json
 from datetime import datetime, timezone
 from typing import Dict, List
@@ -13,6 +12,7 @@ from ncatbot.core.event.message_segment.message_segment import Text, Image
 from ncatbot.utils import get_log
 from common.napcat import napcat_service
 from common.config import GLOBAL_CONFIG
+from common import http_client
 
 _log = get_log()
 _log.setLevel('INFO')
@@ -77,160 +77,155 @@ class Epic(BasePlugin):
     async def _get_games_from_indienova(self) -> List[Dict]:
         """从indienova网站获取Epic免费游戏信息"""
         try:
-            # 添加浏览器请求头以避免403错误
-            headers = {
-                'User-Agent': GLOBAL_CONFIG.get("user_agent", 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'),
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            }
+            # 使用全局 http_client 获取内容
+            html = await http_client.get_text(self.INDIENOVA_EPIC_URL)
+            if not html:
+                _log.warning("无法获取indienova Epic页面内容")
+                return []
+                
+            # 解析HTML内容
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'html.parser')
             
-            async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
-                response = await client.get(self.INDIENOVA_EPIC_URL)
-                response.raise_for_status()
+            free_games = []
+            
+            # 查找游戏列表项 - indienova网站使用user-game-list-item类
+            game_items = soup.find_all(class_='user-game-list-item')
+            
+            if game_items:
+                _log.info(f"找到 {len(game_items)} 个游戏列表项")
                 
-                # 解析HTML内容
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(response.text, 'html.parser')
-                
-                free_games = []
-                
-                # 查找游戏列表项 - indienova网站使用user-game-list-item类
-                game_items = soup.find_all(class_='user-game-list-item')
-                
-                if game_items:
-                    _log.info(f"找到 {len(game_items)} 个游戏列表项")
-                    
-                    for item in game_items:
-                        # 查找游戏标题
-                        title_element = item.find('h4')
-                        if title_element:
-                            # 获取游戏标题
-                            game_title = title_element.get_text(strip=True)
+                for item in game_items:
+                    # 查找游戏标题
+                    title_element = item.find('h4')
+                    if title_element:
+                        # 获取游戏标题
+                        game_title = title_element.get_text(strip=True)
+                        
+                        # 查找英文名称
+                        english_name_element = title_element.find('small')
+                        english_name = english_name_element.get_text(strip=True) if english_name_element else ""
+                        
+                        # 构建完整的游戏名称
+                        full_title = game_title
+                        if english_name and english_name != game_title:
+                            full_title = f"{game_title} ({english_name})"
+                        
+                        # 查找游戏图片
+                        image_element = item.find('img')
+                        image_url = ""
+                        if image_element and image_element.get('src'):
+                            image_url = image_element.get('src')
+                            # 处理图片URL
+                            if image_url.startswith('//'):
+                                image_url = f"https:{image_url}"
+                            elif image_url.startswith('/'):
+                                image_url = f"https://indienova.com{image_url}"
+                        
+                        # 查找时间范围信息
+                        time_element = item.find(class_='intro')
+                        time_range = ""
+                        start_date = ""
+                        end_date = ""
+                        game_status = "当前免费"
+                        
+                        if time_element:
+                            time_range = time_element.get_text(strip=True)
+                            # 解析时间范围，例如："2025/12/11 - 2025/12/18"
+                            import re
+                            time_pattern = r'(\d{4}/\d{1,2}/\d{1,2})\s*-\s*(\d{4}/\d{1,2}/\d{1,2})'
+                            match = re.search(time_pattern, time_range)
                             
-                            # 查找英文名称
-                            english_name_element = title_element.find('small')
-                            english_name = english_name_element.get_text(strip=True) if english_name_element else ""
-                            
-                            # 构建完整的游戏名称
-                            full_title = game_title
-                            if english_name and english_name != game_title:
-                                full_title = f"{game_title} ({english_name})"
-                            
-                            # 查找游戏图片
-                            image_element = item.find('img')
-                            image_url = ""
-                            if image_element and image_element.get('src'):
-                                image_url = image_element.get('src')
-                                # 处理图片URL
-                                if image_url.startswith('//'):
-                                    image_url = f"https:{image_url}"
-                                elif image_url.startswith('/'):
-                                    image_url = f"https://indienova.com{image_url}"
-                            
-                            # 查找时间范围信息
-                            time_element = item.find(class_='intro')
-                            time_range = ""
-                            start_date = ""
-                            end_date = ""
-                            game_status = "当前免费"
-                            
-                            if time_element:
-                                time_range = time_element.get_text(strip=True)
-                                # 解析时间范围，例如："2025/12/11 - 2025/12/18"
-                                import re
-                                time_pattern = r'(\d{4}/\d{1,2}/\d{1,2})\s*-\s*(\d{4}/\d{1,2}/\d{1,2})'
-                                match = re.search(time_pattern, time_range)
+                            if match:
+                                start_date = match.group(1)
+                                end_date = match.group(2)
                                 
-                                if match:
-                                    start_date = match.group(1)
-                                    end_date = match.group(2)
-                                    
-                                    # 判断游戏状态，如果已过期直接跳过这个游戏
-                                    from datetime import datetime
-                                    current_date = datetime.now().strftime("%Y/%m/%d")
-                                    
-                                    if current_date > end_date:
-                                        # 游戏已过期，跳过处理
-                                        continue
-                                    elif current_date < start_date:
-                                        game_status = "即将免费"
-                                    else:
-                                        game_status = "当前免费"
-                            
-                            # 查找游戏详细页面链接
-                            detail_url = ""
-                            detail_link = item.find('a', href=True)
-                            if detail_link:
-                                href = detail_link.get('href')
-                                if href.startswith('/'):
-                                    detail_url = f"https://indienova.com{href}"
+                                # 判断游戏状态，如果已过期直接跳过这个游戏
+                                from datetime import datetime
+                                current_date = datetime.now().strftime("%Y/%m/%d")
+                                
+                                if current_date > end_date:
+                                    # 游戏已过期，跳过处理
+                                    continue
+                                elif current_date < start_date:
+                                    game_status = "即将免费"
                                 else:
-                                    detail_url = href
-                            
-                            # 获取Epic和Steam购买链接
-                            epic_url = ""
-                            steam_url = ""
-                            
-                            if detail_url:
-                                # 访问游戏详细页面获取购买链接
-                                try:
-                                    detail_response = await client.get(detail_url)
-                                    if detail_response.status_code == 200:
-                                        detail_soup = BeautifulSoup(detail_response.text, 'html.parser')
-                                        
-                                        # 查找Epic链接
-                                        epic_link = detail_soup.find('a', href=lambda x: x and 'epicgames.com' in x)
-                                        if epic_link:
-                                            epic_url = epic_link.get('href')
-                                        
-                                        # 查找Steam链接
-                                        steam_link = detail_soup.find('a', href=lambda x: x and 'steampowered.com' in x)
-                                        if steam_link:
-                                            steam_url = steam_link.get('href')
-                                except:
-                                    pass
-                            
-                            # 如果没有找到购买链接，使用默认链接
-                            if not epic_url:
-                                epic_url = "https://store.epicgames.com/zh-CN/free-games"
-                            if not steam_url:
-                                steam_url = "https://store.steampowered.com/"
-                            
-                            # 构建游戏信息
-                            game_info = {
-                                "Title": full_title,
-                                "Description": "",
-                                "Developer": "",
-                                "EpicUrl": epic_url,
-                                "SteamUrl": steam_url,
-                                "GameType": game_status,
-                                "StartDate": start_date,
-                                "EndDate": end_date,
-                                "ImageUrl": image_url,
-                                "Platform": "Epic"
-                            }
-                            free_games.append(game_info)
-                
-                # 如果仍然没有找到游戏，使用已知的当前免费游戏作为后备
-                if not free_games:
-                    current_games = [
-                        {
-                            "Title": "霍格沃茨之遗 (Hogwarts Legacy)",
-                            "Description": "开放世界动作角色扮演游戏，体验魔法世界的冒险",
-                            "Developer": "Avalanche Software",
-                            "EpicUrl": "https://store.epicgames.com/zh-CN/p/hogwarts-legacy",
-                            "SteamUrl": "https://store.steampowered.com/app/990080",
-                            "GameType": "当前免费",
-                            "StartDate": "2025/12/11",
-                            "EndDate": "2025/12/18",
-                            "ImageUrl": "https://hive.indienova.com/ranch/gamedb/2022/08/cover/g-1481135-46ebwv.jpg_webp",
+                                    game_status = "当前免费"
+                        
+                        # 查找游戏详细页面链接
+                        detail_url = ""
+                        detail_link = item.find('a', href=True)
+                        if detail_link:
+                            href = detail_link.get('href')
+                            if href.startswith('/'):
+                                detail_url = f"https://indienova.com{href}"
+                            else:
+                                detail_url = href
+                        
+                        # 获取Epic和Steam购买链接
+                        epic_url = ""
+                        steam_url = ""
+                        
+                        if detail_url:
+                            # 访问游戏详细页面获取购买链接
+                            try:
+                                detail_html = await http_client.get_text(detail_url)
+                                if detail_html:
+                                    detail_soup = BeautifulSoup(detail_html, 'html.parser')
+                                    
+                                    # 查找Epic链接
+                                    epic_link = detail_soup.find('a', href=lambda x: x and 'epicgames.com' in x)
+                                    if epic_link:
+                                        epic_url = epic_link.get('href')
+                                    
+                                    # 查找Steam链接
+                                    steam_link = detail_soup.find('a', href=lambda x: x and 'steampowered.com' in x)
+                                    if steam_link:
+                                        steam_url = steam_link.get('href')
+                            except:
+                                pass
+                        
+                        # 如果没有找到购买链接，使用默认链接
+                        if not epic_url:
+                            epic_url = "https://store.epicgames.com/zh-CN/free-games"
+                        if not steam_url:
+                            steam_url = "https://store.steampowered.com/"
+                        
+                        # 构建游戏信息
+                        game_info = {
+                            "Title": full_title,
+                            "Description": "",
+                            "Developer": "",
+                            "EpicUrl": epic_url,
+                            "SteamUrl": steam_url,
+                            "GameType": game_status,
+                            "StartDate": start_date,
+                            "EndDate": end_date,
+                            "ImageUrl": image_url,
                             "Platform": "Epic"
                         }
-                    ]
-                    free_games.extend(current_games)
-                
-                _log.info(f"从indienova获取到 {len(free_games)} 个免费游戏")
-                return free_games
+                        free_games.append(game_info)
+            
+            # 如果仍然没有找到游戏，使用已知的当前免费游戏作为后备
+            if not free_games:
+                current_games = [
+                    {
+                        "Title": "霍格沃茨之遗 (Hogwarts Legacy)",
+                        "Description": "开放世界动作角色扮演游戏，体验魔法世界的冒险",
+                        "Developer": "Avalanche Software",
+                        "EpicUrl": "https://store.epicgames.com/zh-CN/p/hogwarts-legacy",
+                        "SteamUrl": "https://store.steampowered.com/app/990080",
+                        "GameType": "当前免费",
+                        "StartDate": "2025/12/11",
+                        "EndDate": "2025/12/18",
+                        "ImageUrl": "https://hive.indienova.com/ranch/gamedb/2022/08/cover/g-1481135-46ebwv.jpg_webp",
+                        "Platform": "Epic"
+                    }
+                ]
+                free_games.extend(current_games)
+            
+            _log.info(f"从indienova获取到 {len(free_games)} 个免费游戏")
+            return free_games
                 
         except Exception as e:
             _log.error(f"从indienova获取游戏失败: {e}")
@@ -239,152 +234,147 @@ class Epic(BasePlugin):
     async def _get_steam_free_games(self) -> List[Dict]:
         """从indienova获取Steam免费游戏信息"""
         try:
-            # 添加浏览器请求头
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            }
+            # 使用全局 http_client 获取内容
+            html = await http_client.get_text(self.INDIENOVA_STEAM_URL)
+            if not html:
+                _log.warning("无法获取indienova Steam页面内容")
+                return []
             
-            async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
-                response = await client.get(self.INDIENOVA_STEAM_URL)
-                response.raise_for_status()
+            # 解析HTML内容
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            free_games = []
+            
+            # 查找游戏列表项 - Steam页面使用相同的user-game-list-item类
+            game_items = soup.find_all(class_='user-game-list-item')
+            
+            if game_items:
+                _log.info(f"找到 {len(game_items)} 个Steam游戏列表项")
                 
-                # 解析HTML内容
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(response.text, 'html.parser')
-                
-                free_games = []
-                
-                # 查找游戏列表项 - Steam页面使用相同的user-game-list-item类
-                game_items = soup.find_all(class_='user-game-list-item')
-                
-                if game_items:
-                    _log.info(f"找到 {len(game_items)} 个Steam游戏列表项")
-                    
-                    for item in game_items:
-                        # 查找游戏标题
-                        title_element = item.find('h4')
-                        if title_element:
-                            # 获取游戏标题
-                            game_title = title_element.get_text(strip=True)
-                            
-                            # 查找英文名称
-                            english_name_element = title_element.find('small')
-                            english_name = english_name_element.get_text(strip=True) if english_name_element else ""
-                            
-                            # 构建完整的游戏名称
-                            full_title = game_title
-                            if english_name and english_name != game_title:
-                                full_title = f"{game_title} ({english_name})"
-                            
-                            # 查找游戏描述
-                            description_element = item.find('p')
-                            description = description_element.get_text(strip=True) if description_element else ""
-                            
-                            # 查找游戏链接
-                            link_element = item.find('a')
-                            game_url = ""
-                            if link_element and link_element.get('href'):
-                                # 如果链接是相对路径，转换为绝对路径
-                                href = link_element.get('href')
-                                if href.startswith('/'):
-                                    game_url = f"https://indienova.com{href}"
-                                else:
-                                    game_url = href
-                            
-                            # 查找游戏图片
-                            image_element = item.find('img')
-                            image_url = ""
-                            if image_element and image_element.get('src'):
-                                image_url = image_element.get('src')
-                                # 处理图片URL
-                                if image_url.startswith('//'):
-                                    image_url = f"https:{image_url}"
-                                elif image_url.startswith('/'):
-                                    image_url = f"https://indienova.com{image_url}"
-                            
-                            # 查找时间信息
-                            time_element = item.find(class_='intro')
-                            time_text = ""
-                            game_type = "当前免费"
-                            
-                            if time_element:
-                                time_text = time_element.get_text(strip=True)
-                                # 解析时间信息
-                                if "在" in time_text and "前获取" in time_text:
-                                    # 提取所有时间信息，例如："在 2022 年 11 月 8 日 上午 2:00 前获取该商品，即可免费保留。在 2025 年 11 月 24 日上午 2:00 前获取该商品，即可免费保留。"
-                                    import re
-                                    time_pattern = r'在 (\d{4}) 年 (\d{1,2}) 月 (\d{1,2}) 日\s*(上午|下午)?\s*(\d{1,2}:\d{2}) 前'
-                                    matches = re.findall(time_pattern, time_text)
+                for item in game_items:
+                    # 查找游戏标题
+                    title_element = item.find('h4')
+                    if title_element:
+                        # 获取游戏标题
+                        game_title = title_element.get_text(strip=True)
+                        
+                        # 查找英文名称
+                        english_name_element = title_element.find('small')
+                        english_name = english_name_element.get_text(strip=True) if english_name_element else ""
+                        
+                        # 构建完整的游戏名称
+                        full_title = game_title
+                        if english_name and english_name != game_title:
+                            full_title = f"{game_title} ({english_name})"
+                        
+                        # 查找游戏描述
+                        description_element = item.find('p')
+                        description = description_element.get_text(strip=True) if description_element else ""
+                        
+                        # 查找游戏链接
+                        link_element = item.find('a')
+                        game_url = ""
+                        if link_element and link_element.get('href'):
+                            # 如果链接是相对路径，转换为绝对路径
+                            href = link_element.get('href')
+                            if href.startswith('/'):
+                                game_url = f"https://indienova.com{href}"
+                            else:
+                                game_url = href
+                        
+                        # 查找游戏图片
+                        image_element = item.find('img')
+                        image_url = ""
+                        if image_element and image_element.get('src'):
+                            image_url = image_element.get('src')
+                            # 处理图片URL
+                            if image_url.startswith('//'):
+                                image_url = f"https:{image_url}"
+                            elif image_url.startswith('/'):
+                                image_url = f"https://indienova.com{image_url}"
+                        
+                        # 查找时间信息
+                        time_element = item.find(class_='intro')
+                        time_text = ""
+                        game_type = "当前免费"
+                        
+                        if time_element:
+                            time_text = time_element.get_text(strip=True)
+                            # 解析时间信息
+                            if "在" in time_text and "前获取" in time_text:
+                                # 提取所有时间信息，例如："在 2022 年 11 月 8 日 上午 2:00 前获取该商品，即可免费保留。在 2025 年 11 月 24 日上午 2:00 前获取该商品，即可免费保留。"
+                                import re
+                                time_pattern = r'在 (\d{4}) 年 (\d{1,2}) 月 (\d{1,2}) 日\s*(上午|下午)?\s*(\d{1,2}:\d{2}) 前'
+                                matches = re.findall(time_pattern, time_text)
+                                
+                                if matches:
+                                    # 获取当前北京时间
+                                    from datetime import datetime, timezone, timedelta
+                                    beijing_tz = timezone(timedelta(hours=8))
+                                    current_time = datetime.now(beijing_tz)
                                     
-                                    if matches:
-                                        # 获取当前北京时间
-                                        from datetime import datetime, timezone, timedelta
-                                        beijing_tz = timezone(timedelta(hours=8))
-                                        current_time = datetime.now(beijing_tz)
-                                        
-                                        # 找到最新的有效时间
-                                        latest_end_date = None
-                                        latest_end_date_str = ""
-                                        
-                                        for match in matches:
-                                            # 处理匹配结果（可能缺少上午/下午）
-                                            if len(match) == 5:
-                                                year, month, day, am_pm, time_str = match
-                                            else:
-                                                # 如果缺少上午/下午，默认为上午
-                                                year, month, day, time_str = match
-                                                am_pm = "上午"
-                                            
-                                            # 转换为24小时制
-                                            hour, minute = map(int, time_str.split(':'))
-                                            if am_pm == '下午' and hour < 12:
-                                                hour += 12
-                                            elif am_pm == '上午' and hour == 12:
-                                                hour = 0
-                                            
-                                            # 构建结束时间（北京时间）
-                                            end_date_str = f"{year}-{month.zfill(2)}-{day.zfill(2)} {hour:02d}:{minute:02d}:00"
-                                            
-                                            # 解析结束时间
-                                            try:
-                                                end_date = datetime.strptime(end_date_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=beijing_tz)
-                                                
-                                                # 只考虑未来的时间
-                                                if end_date > current_time:
-                                                    if latest_end_date is None or end_date > latest_end_date:
-                                                        latest_end_date = end_date
-                                                        latest_end_date_str = end_date_str
-                                            except:
-                                                pass
-                                        
-                                        # 判断游戏状态
-                                        if latest_end_date:
-                                            game_type = "当前免费"
-                                            # 更新时间为最新的有效时间
-                                            time_text = f"在 {latest_end_date.strftime('%Y 年 %m 月 %d 日 %H:%M')} 前获取该商品，即可免费保留"
+                                    # 找到最新的有效时间
+                                    latest_end_date = None
+                                    latest_end_date_str = ""
+                                    
+                                    for match in matches:
+                                        # 处理匹配结果（可能缺少上午/下午）
+                                        if len(match) == 5:
+                                            year, month, day, am_pm, time_str = match
                                         else:
-                                            # 如果所有时间都已过期，跳过这个游戏
-                                            continue
-                            
-                            # 构建游戏信息
-                            game_info = {
-                                "Title": full_title,
-                                "Description": description,
-                                "Developer": "",
-                                "Url": game_url,
-                                "GameType": game_type,
-                                "StartDate": "",
-                                "EndDate": time_text if time_text else "",
-                                "Platform": "Steam",
-                                "ImageUrl": image_url
-                            }
-                            free_games.append(game_info)
-                
-                _log.info(f"从indienova获取到 {len(free_games)} 个Steam免费游戏")
-                return free_games
-                
+                                            # 如果缺少上午/下午，默认为上午
+                                            year, month, day, time_str = match
+                                            am_pm = "上午"
+                                        
+                                        # 转换为24小时制
+                                        hour, minute = map(int, time_str.split(':'))
+                                        if am_pm == '下午' and hour < 12:
+                                            hour += 12
+                                        elif am_pm == '上午' and hour == 12:
+                                            hour = 0
+                                        
+                                        # 构建结束时间（北京时间）
+                                        end_date_str = f"{year}-{month.zfill(2)}-{day.zfill(2)} {hour:02d}:{minute:02d}:00"
+                                        
+                                        # 解析结束时间
+                                        try:
+                                            end_date = datetime.strptime(end_date_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=beijing_tz)
+                                            
+                                            # 只考虑未来的时间
+                                            if end_date > current_time:
+                                                if latest_end_date is None or end_date > latest_end_date:
+                                                    latest_end_date = end_date
+                                                    latest_end_date_str = end_date_str
+                                        except:
+                                            pass
+                                    
+                                    # 判断游戏状态
+                                    if latest_end_date:
+                                        game_type = "当前免费"
+                                        # 更新时间为最新的有效时间
+                                        time_text = f"在 {latest_end_date.strftime('%Y 年 %m 月 %d 日 %H:%M')} 前获取该商品，即可免费保留"
+                                    else:
+                                        # 如果所有时间都已过期，跳过这个游戏
+                                        continue
+                        
+                        # 构建游戏信息
+                        game_info = {
+                            "Title": full_title,
+                            "Description": description,
+                            "Developer": "",
+                            "Url": game_url,
+                            "GameType": game_type,
+                            "StartDate": "",
+                            "EndDate": time_text if time_text else "",
+                            "Platform": "Steam",
+                            "ImageUrl": image_url
+                        }
+                        free_games.append(game_info)
+            
+            _log.info(f"从indienova获取到 {len(free_games)} 个Steam免费游戏")
+            return free_games
+            
         except Exception as e:
             _log.error(f"从indienova获取Steam游戏失败: {e}")
             return []
@@ -499,19 +489,17 @@ class Epic(BasePlugin):
         # 如果有图片URL，添加图片组件
         if image_url:
             try:
-                # 使用httpx下载图片并转换为base64
+                # 使用 http_client 下载图片并转换为base64
                 headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                     'Referer': 'https://indienova.com/'
                 }
                 
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(image_url, headers=headers)
-                    response.raise_for_status()
-                    
+                image_content = await http_client.get_content(image_url, headers=headers)
+                
+                if image_content:
                     # 将图片转换为base64
                     import base64
-                    image_base64 = base64.b64encode(response.content).decode('utf-8')
+                    image_base64 = base64.b64encode(image_content).decode('utf-8')
                     
                     # 添加图片段
                     segments.append({"type": "image", "data": {"file": f"base64://{image_base64}"}})

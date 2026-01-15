@@ -182,7 +182,7 @@ class GPT(BasePlugin):
     async def text_to_speech(self, text):
         try:
             temp_file = self.temp_dir / f"gpt_tts_{hash(text)}.mp3"
-            communicate = edge_tts.Communicate(text, self.VOICE, rate=self.TTS_RATE)
+            communicate = edge_tts.Communicate(text, self.voice, rate=self.tts_rate)
             await communicate.save(str(temp_file))
             return temp_file
         except Exception as e:
