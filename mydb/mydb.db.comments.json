@@ -13,5 +13,11 @@
     "speak_date": "发言日期",
     "speak_count": "当日发言次数",
     "last_speak_time": "最后发言时间"
+  },
+  "xydj_cache": {
+    "key": "缓存键 (搜索关键词或URL)",
+    "value": "缓存内容 (JSON序列化)",
+    "type": "缓存类型 (search/detail/byrut)",
+    "timestamp": "缓存时间戳"
   }
 }
