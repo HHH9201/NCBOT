@@ -574,32 +574,36 @@ class Epic(BasePlugin):
             epic_games = [game for game in games if game.get("Platform") == "Epic"]
             steam_games = [game for game in games if game.get("Platform") == "Steam"]
             
-            # 构建消息链
-            segments = [Text(f"EPIC：{len(epic_games)}个，STEAM：{len(steam_games)}个\n\n")]
+            nodes = []
+            bot_uin = "10000"
+            if hasattr(event, 'self_id'):
+                bot_uin = str(event.self_id)
             
+            # Header Node
+            header_text = f"🎯 免费游戏信息汇总\n"
+            header_text += f"📊 EPIC：{len(epic_games)}个 | STEAM：{len(steam_games)}个\n"
+            header_text += "=" * 30
+            nodes.append(napcat_service.construct_node(bot_uin, "Epic助手", header_text))
+            
+            # Epic Games Nodes
             if epic_games:
-                segments.append(Text("【EPIC】\n"))
+                nodes.append(napcat_service.construct_node(bot_uin, "Epic助手", "🎮 【EPIC 免费游戏】"))
                 for game in epic_games:
-                    content_list = await self._format_game_node_content(game)
-                    for item in content_list:
-                        if item['type'] == 'text':
-                            segments.append(Text(item['data']['text']))
-                        elif item['type'] == 'image':
-                            segments.append(Image(item['data']['file']))
-                    segments.append(Text("\n"))
+                    content = await self._format_game_node_content(game)
+                    nodes.append(napcat_service.construct_node(bot_uin, "Epic助手", content))
             
+            # Steam Games Nodes
             if steam_games:
-                segments.append(Text("【STEAM】\n"))
+                nodes.append(napcat_service.construct_node(bot_uin, "Epic助手", "🚂 【STEAM 免费游戏】"))
                 for game in steam_games:
-                    content_list = await self._format_game_node_content(game)
-                    for item in content_list:
-                        if item['type'] == 'text':
-                            segments.append(Text(item['data']['text']))
-                        elif item['type'] == 'image':
-                            segments.append(Image(item['data']['file']))
-                    segments.append(Text("\n"))
+                    content = await self._format_game_node_content(game)
+                    nodes.append(napcat_service.construct_node(bot_uin, "Epic助手", content))
             
-            await event.reply(MessageChain(segments))
+            # Send Forward Message
+            if nodes:
+                await napcat_service.send_private_forward_msg(event.user_id, nodes)
+            else:
+                await event.reply(MessageChain([Text("❌ 未找到任何免费游戏信息")]))
     
     @bot.group_event
     async def epic_help(self, event: GroupMessage):
@@ -623,4 +627,4 @@ class Epic(BasePlugin):
 
 🎯 数据来源: Epic Games官方API"""
             
-            await event.reply(MessageChain([Text(help_text)]))
+            await napcat_service.smart_send_group_msg(event.group_id, help_text, self.api)

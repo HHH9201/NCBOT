@@ -36,6 +36,28 @@ class NapCatService:
         }
         payload.update(kwargs)
         
+        return await self._send_forward_msg(url, payload, f"Group: {group_id}")
+
+    async def send_private_forward_msg(self, user_id: Union[int, str], nodes: List[Dict], **kwargs) -> bool:
+        """
+        发送私聊伪造合并转发消息
+        
+        :param user_id: 用户ID
+        :param nodes: 消息节点列表
+        :param kwargs: 其他可选参数
+        :return: 是否发送成功
+        """
+        url = f"{self.api_url}/send_private_forward_msg"
+        payload = {
+            "user_id": int(user_id),
+            "messages": nodes
+        }
+        payload.update(kwargs)
+        
+        return await self._send_forward_msg(url, payload, f"Private: {user_id}")
+
+    async def _send_forward_msg(self, url: str, payload: Dict, log_context: str) -> bool:
+        """内部发送方法"""
         import asyncio
         max_retries = 3
         retry_delay = 2
@@ -47,7 +69,7 @@ class NapCatService:
                         if resp.status == 200:
                             result = await resp.json()
                             if result.get('status') == 'ok':
-                                logging.info(f"[NapCat] 合并转发消息发送成功 -> Group: {group_id}")
+                                logging.info(f"[NapCat] 合并转发消息发送成功 -> {log_context}")
                                 return True
                             else:
                                 logging.warning(f"[NapCat] 合并转发消息发送失败: {result}")
