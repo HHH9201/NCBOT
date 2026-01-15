@@ -39,7 +39,8 @@ class txt(BasePlugin):
 
     def _load_config(self):
         """从配置文件加载关键词和设置"""
-        config_path = os.path.join(os.path.dirname(__file__), "keywords.yaml")
+        # 修改为 tool 目录下的 keywords.yaml
+        config_path = os.path.join(os.path.dirname(__file__), "tool", "keywords.yaml")
         try:
             if os.path.exists(config_path):
                 with open(config_path, "r", encoding="utf-8") as f:

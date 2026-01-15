@@ -1,0 +1,15 @@
+keywords:
+  "种子": "《bt种子使用》https://www.yuque.com/lanmeng-ijygo/ey7ah4/ng90x573gk7xh0wm?singleDoc# "
+  "文件损坏": "《文件损坏怎么办？》https://www.yuque.com/lanmeng-ijygo/ey7ah4/qqfafhy1g42z42wg?singleDoc# "
+  "设置中文": "《设置中文方法》https://www.yuque.com/lanmeng-ijygo/ey7ah4/kdsnhprf6bprtgz5?singleDoc#"
+  "压缩包": "《这么多压缩包怎么下载、怎么安装？》https://www.yuque.com/lanmeng-ijygo/ey7ah4/xobm6lsb326lu5kx?singleDoc# "
+  "常见问题": "《详细的常见问题解决》https://www.yuque.com/lanmeng-ijygo/ey7ah4/ko0igrc5te8p4fn2?singleDoc#"
+  "游戏打不开": "《游戏打不开、提示报错、黑屏等问题》https://www.yuque.com/lanmeng-ijygo/ey7ah4/fwfmdu3erlku9a1e?singleDoc# "
+  "联机补丁": "《搜索和使用联机游戏》https://www.yuque.com/lanmeng-ijygo/ey7ah4/fe9hfep86cw7coku?singleDoc#"
+  "枪火存档": "枪火重生学习版存档位置：点击，C盘，用户，公用，公用文档，onlinefix，1217060，Saves，替换存档文件"
+  "文档": "发送关键字查看文档:\n1.联机补丁\n2.种子\n3.文件损坏\n4.设置中文\n5.压缩包下载\n6.常见问题\n7.游戏打不开\n8.枪火存档"
+
+case_sensitive: false
+default_reply:
+  enabled: true
+  message: "请发送 '文档' 查看所有可用的关键词列表"
