@@ -1,5 +1,5 @@
 # GPT 插件 - 智能联网Agent + 深度拟人TTS + 阳光晓晓
-import asyncio, time, re, base64, logging
+import asyncio, re, base64, logging
 from typing import Dict, List
 from pathlib import Path
 import tempfile
@@ -7,7 +7,7 @@ import edge_tts
 from datetime import datetime
 
 # 引入全局服务
-from common import ai_service, GLOBAL_CONFIG
+from common import ai_service, GLOBAL_CONFIG, MemoryCache
 
 # 🌟 新增：搜索库
 try:
@@ -26,12 +26,8 @@ from ncatbot.utils import get_log
 _log = get_log(); _log.setLevel('INFO')
 
 class GPT(BasePlugin):
-    name, version = "GPT_Agent_Voice", "6.0.0"
+    name, version = "GPT_Agent_Voice", "6.1.0"
     
-    sessions: Dict[int, List[Dict]] = {}
-    cache: Dict[str, str] = {}
-    cache_time: Dict[str, float] = {}
-    cache_timeout = 300
     bot_qq = "58805194"
     
     def __init__(self, *args, **kwargs):
@@ -44,6 +40,10 @@ class GPT(BasePlugin):
         self.model_name = GLOBAL_CONFIG.get("gpt.model", "Qwen/Qwen2.5-72B-Instruct")
         self.voice = GLOBAL_CONFIG.get("gpt.voice", "zh-CN-XiaoxiaoNeural")
         self.tts_rate = "+10%"
+        
+        # 缓存与会话管理
+        self.cache = MemoryCache(ttl=300)
+        self.session_cache = MemoryCache(ttl=3600) # 会话保留1小时
 
     # ---------------- 🧠 1. AI 意图判断大脑 ----------------
     
@@ -137,12 +137,17 @@ class GPT(BasePlugin):
     async def chat(self, text: str, uin=None, search_context: str = "") -> str:
         key = f"{uin}_{text[:100]}"
         # 只有非搜索请求才走缓存
-        if not search_context and key in self.cache and time.time() - self.cache_time[key] < self.cache_timeout:
-            _log.info(f"[{self.name}] 命中缓存"); return self.cache[key]
+        if not search_context:
+            cached = self.cache.get(key)
+            if cached:
+                _log.info(f"[{self.name}] 命中缓存"); return cached
         
         # 组装 Prompt
         msgs = [{"role": "system", "content": self._get_system_prompt()}]
-        if uin and uin in self.sessions: msgs += self.sessions[uin][-4:]
+        if uin:
+            history = self.session_cache.get(uin)
+            if history:
+                msgs += history[-4:]
         
         final_prompt = text
         if search_context:
@@ -170,7 +175,7 @@ class GPT(BasePlugin):
             cleaned_res = self._clean_text(res)
             
             if not search_context:
-                self.cache[key] = cleaned_res; self.cache_time[key] = time.time()
+                self.cache.set(key, cleaned_res)
             
             return cleaned_res
         except Exception as e: 
@@ -201,7 +206,6 @@ class GPT(BasePlugin):
         else:
             uin = msg.sender.user_id
             
-        self.sessions.setdefault(uin, [])
         pure = re.sub(r"\[CQ:at,qq=\d+\]", "", txt).strip()
         
         try:
@@ -222,8 +226,10 @@ class GPT(BasePlugin):
                 reply = await self.chat(pure, uin, search_context=search_result)
             
             # 记录历史
-            self.sessions[uin] += [{"role": "user", "content": pure}, {"role": "assistant", "content": reply}]
-            if len(self.sessions[uin]) > 20: self.sessions[uin] = self.sessions[uin][-20:]
+            history = self.session_cache.get(uin) or []
+            history.extend([{"role": "user", "content": pure}, {"role": "assistant", "content": reply}])
+            if len(history) > 20: history = history[-20:]
+            self.session_cache.set(uin, history)
             
             # 5. 发送 (语音优先)
             if reply and len(reply) > 0:
@@ -243,20 +249,16 @@ class GPT(BasePlugin):
         except Exception as e:
             # 兜底发文字
             reply_text = reply if 'reply' in locals() else f"处理出错: {e}"
-            target = {"group_id": msg.group_id} if is_group else {"user_id": uin}
-            func = self.api.post_group_msg if is_group else self.api.post_private_msg
-            await func(**target, rtf=MessageChain([Text(reply_text)]))
+            if is_group:
+                await napcat_service.smart_send_group_msg(msg.group_id, reply_text, self.api)
+            else:
+                target = {"user_id": uin}
+                await self.api.post_private_msg(**target, rtf=MessageChain([Text(reply_text)]))
 
     # 辅助函数
     def _is_card_query(self, txt: str) -> bool:
         t = re.sub(r"\[CQ:at,qq=\d+\]", "", txt).strip()
         return (("流量" in t and "卡" in t) or ("流量卡" in t) or ("号卡" in t) or ("办卡" in t))
-
-    def trim(self, m: List[Dict]) -> List[Dict]: return m[-20:]
-    def _clean_cache(self):
-        now = time.time()
-        for k in [k for k, t in self.cache_time.items() if now - t > self.cache_timeout]:
-            self.cache.pop(k, None); self.cache_time.pop(k, None)
 
     @bot.group_event
     async def on_group_event(self, msg: GroupMessage): await self._handle_message(msg, True)

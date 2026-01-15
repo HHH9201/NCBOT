@@ -95,16 +95,11 @@ class DailyTaskManager:
                     ranking_text = self.plugin._format_ranking(group_id, "yesterday")
                     
                     # 智能发送消息
-                    if len(ranking_text) > 200:
-                        # 构造转发节点
-                        nodes = [napcat_service.construct_node("10000", "发言排行榜", ranking_text)]
-                        await napcat_service.send_group_forward_msg(group_id, nodes)
-                    else:
-                        # 使用BotAPI发送群消息
-                        await self.bot_api.post_group_msg(
-                            group_id=int(group_id),
-                            message=ranking_text
-                        )
+                    await napcat_service.smart_send_group_msg(
+                        group_id,
+                        ranking_text,
+                        self.bot_api
+                    )
                     
                     # 避免发送太快
                     await asyncio.sleep(2)

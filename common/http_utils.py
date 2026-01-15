@@ -107,16 +107,39 @@ class AsyncHttpClient:
                 return None
                 
         logging.error(f"[HTTP] 请求最终失败: {url}")
-        return None
+        return await response.text()
+                            
+    async def get_redirect_url(self, url: str, headers: Optional[Dict] = None, verify_ssl: bool = False) -> Optional[str]:
+        """获取重定向后的真实URL"""
+        current_headers = self._get_headers(headers)
+        try:
+            async with aiohttp.ClientSession(
+                timeout=self.timeout,
+                connector=aiohttp.TCPConnector(ssl=verify_ssl)
+            ) as session:
+                async with session.head(url, headers=current_headers, proxy=self.proxy, allow_redirects=True) as resp:
+                    return str(resp.url)
+        except Exception as e:
+            # 如果 HEAD 失败，尝试 GET
+            try:
+                async with aiohttp.ClientSession(
+                    timeout=self.timeout,
+                    connector=aiohttp.TCPConnector(ssl=verify_ssl)
+                ) as session:
+                    async with session.get(url, headers=current_headers, proxy=self.proxy, allow_redirects=True) as resp:
+                        return str(resp.url)
+            except Exception as e2:
+                logging.error(f"[HTTP] 获取重定向URL失败: {e2}")
+                return None
 
     async def get_text(self, url: str, **kwargs) -> Optional[str]:
-        return await self.fetch(url, method="GET", response_type="text", **kwargs)
+        return await self.fetch(url, response_type="text", **kwargs)
 
     async def get_json(self, url: str, **kwargs) -> Optional[Dict]:
-        return await self.fetch(url, method="GET", response_type="json", **kwargs)
+        return await self.fetch(url, response_type="json", **kwargs)
 
     async def get_content(self, url: str, **kwargs) -> Optional[bytes]:
-        return await self.fetch(url, method="GET", response_type="content", **kwargs)
+        return await self.fetch(url, response_type="content", **kwargs)
 
 # 全局默认实例
 http_client = AsyncHttpClient()

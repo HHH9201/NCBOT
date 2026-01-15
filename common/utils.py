@@ -5,7 +5,66 @@ import string
 import logging
 import yaml
 import re
-from typing import Any, Dict
+import time
+from typing import Any, Dict, Generic, TypeVar, Optional
+
+T = TypeVar("T")
+
+class MemoryCache(Generic[T]):
+    """
+    通用内存缓存类
+    """
+    def __init__(self, ttl: float = 300):
+        self.cache: Dict[str, T] = {}
+        self.expire_map: Dict[str, float] = {}
+        self.ttl = ttl
+
+    def get(self, key: str) -> Optional[T]:
+        if key in self.cache:
+            if time.time() < self.expire_map[key]:
+                return self.cache[key]
+            else:
+                self.delete(key)
+        return None
+
+    def set(self, key: str, value: T, ttl: float = None):
+        self.cache[key] = value
+        self.expire_map[key] = time.time() + (ttl or self.ttl)
+
+    def delete(self, key: str):
+        self.cache.pop(key, None)
+        self.expire_map.pop(key, None)
+
+    def clear(self):
+        self.cache.clear()
+        self.expire_map.clear()
+        
+    def cleanup(self):
+        """清理过期缓存"""
+        now = time.time()
+        expired_keys = [k for k, t in self.expire_map.items() if now >= t]
+        for k in expired_keys:
+            self.delete(k)
+
+from .config import GLOBAL_CONFIG
+
+def is_admin(user_id: str) -> bool:
+    """
+    检查用户是否为管理员
+    """
+    admin_list = GLOBAL_CONFIG.get("admin_qq", [])
+    return str(user_id) in admin_list
+
+def is_group_allowed(group_id: str) -> bool:
+    """
+    检查群组是否在允许列表中
+    """
+    # 如果未配置 allowed_groups，默认允许所有 (或者根据需求修改为默认禁止)
+    # 这里假设如果没有配置，默认允许所有，除非配置了 enabled_groups
+    enabled_groups = GLOBAL_CONFIG.get("enabled_groups")
+    if not enabled_groups:
+        return True
+    return str(group_id) in enabled_groups
 
 def image_to_base64(image_path: str) -> str:
     """

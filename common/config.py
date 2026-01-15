@@ -22,7 +22,8 @@ DEFAULT_CONFIG = {
     "database": {
         "path": str(ROOT_DIR / "mydb" / "mydb.db")
     },
-    "proxy": "http://127.0.0.1:7899"
+    "proxy": "http://127.0.0.1:7899",
+    "admin_qq": ["123456789"]
 }
 
 class Config:

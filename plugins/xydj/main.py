@@ -43,7 +43,7 @@ bot = CompatibleEnrollment
 
 urllib3.disable_warnings()
 
-CACHE_FILE = Path(__file__).parent / "game_name_cache.yaml"
+CACHE_FILE = Path(__file__).parent / "tool" / "cache" / "game_name_cache.yaml"
 _title_cache = load_yaml(CACHE_FILE)
 
 async def translate_to_chinese_title(eng: str) -> str:
@@ -135,25 +135,10 @@ def extract_english_name(title: str) -> tuple[str, str]:
     
     return english_part.strip(), chinese_display.strip()
 
-# 删除 get_text_size 函数，不再使用
-
-async def fetch_text(url, **kwargs):
-    async with aiohttp.ClientSession(cookies=COOKIES, headers=HEADERS) as session:
-        async with session.get(url, **kwargs) as resp:
-            return await resp.text()
-
-async def get_real_url(jump_url: str) -> str:
-    async with aiohttp.ClientSession(cookies=COOKIES, headers=HEADERS) as s:
-        async with s.head(jump_url, allow_redirects=False) as r:
-            if 300 <= r.status < 400:
-                return r.headers['Location']
-        async with s.get(jump_url) as r:
-            return str(r.url)
-
 # -------------------- xydj 搜索 --------------------
 async def search_game(game_name: str):
     url = f"https://www.xianyudanji.to/?cat=1&s={game_name}&order=views"
-    html = await fetch_text(url, timeout=15)
+    html = await http_client.get_text(url)
     soup = BeautifulSoup(html, "lxml")
     games, seen = [], set()
     for a in soup.select("article.post-grid a[href][title]"):
@@ -196,7 +181,9 @@ async def search_game(game_name: str):
 # -------------------- xydj 详情 --------------------
 async def extract_download_info(game_url: str):
     try:
-        html = await fetch_text(game_url, timeout=15)
+        html = await http_client.get_text(game_url)
+        if not html:
+            return ["无法获取页面内容"]
         soup = BeautifulSoup(html, "lxml")
         box = soup.select_one("#ripro_v2_shop_down-5")
         if not box:
@@ -293,7 +280,9 @@ async def extract_download_info(game_url: str):
             if '解压密码' in name:
                 continue
             jump_url = urljoin(game_url, a['href'])
-            real_url = await get_real_url(jump_url)
+            real_url = await http_client.get_redirect_url(jump_url)
+            if not real_url:
+                real_url = jump_url
             results.append(f"{name}: {real_url}")
         return results
     except Exception as e:
@@ -449,87 +438,51 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
     nodes = []
 
     # 1. 赞助节点
-    # 使用 base64 编码的图片
-    base_dir = "/home/hjh/BOT/NCBOT"
-    abs_qq_img_path = QQ_IMG
-    qq_img_base64 = image_to_base64(abs_qq_img_path)
-    
-    sponsor_content = [{"type": "text", "data": {"text": 赞助内容[0]}}]
+    sponsor_msgs = [{"type": "text", "data": {"text": 赞助内容[0]}}]
+    qq_img_base64 = image_to_base64(QQ_IMG)
     if qq_img_base64:
-        sponsor_content.append({"type": "image", "data": {"file": qq_img_base64}})
+        sponsor_msgs.append({"type": "image", "data": {"file": qq_img_base64}})
     
-    # 从消息中提取游戏名称，用于标题和摘要
+    nodes.append(napcat_service.construct_node(user_id, user_nickname, sponsor_msgs))
+
+    # 提取游戏名
     game_title = ""
     for line in 单机_lines:
         if "游戏名字：" in line:
-            parts = line.split("游戏名字：")
-            if len(parts) > 1:
-                game_title = parts[1].strip()
-                break
+            game_title = line.split("游戏名字：")[1].strip()
+            break
     if not game_title:
         for line in 联机_lines:
             if "游戏名字：" in line:
-                parts = line.split("游戏名字：")
-                if len(parts) > 1:
-                    game_title = parts[1].strip()
-                    break
+                game_title = line.split("游戏名字：")[1].strip()
+                break
     if not game_title:
         game_title = "游戏资源"
 
-    # 1. 赞助节点
-    nodes.append({
-        "type": "node",
-        "data": {
-            "uin": user_id,
-            "nickname": user_nickname,
-            "content": sponsor_content
-        }
-    })
+    # 2. 单机版节点
+    单机_msgs = [{"type": "text", "data": {"text": line}} for line in 单机_lines]
+    nodes.append(napcat_service.construct_node(user_id, user_nickname, 单机_msgs))
 
-    # 2. 单机版节点（去掉标题行，只写网盘信息）
-    单机_nodes = [{"type": "text", "data": {"text": line}} for line in 单机_lines]
-    nodes.append({
-        "type": "node",
-        "data": {
-            "uin": user_id,
-            "nickname": user_nickname,
-            "content": 单机_nodes
-        }
-    })
-
-    # 3. 联机版节点（直接使用处理好的内容，不再重复添加标题）
-    联机_nodes = []
-    # 直接追加处理好的内容
+    # 3. 联机版节点
     if 联机_lines:
-        联机_nodes.extend([{"type": "text", "data": {"text": line}} for line in 联机_lines])
+        联机_msgs = [{"type": "text", "data": {"text": line}} for line in 联机_lines]
         
-        # ③ 检查是否有备用图片需要添加
+        # 检查备用图片
         for line in 联机_lines:
-            if "备用图片" in line and line.split("备用图片：")[1].strip():
-                image_path = line.split("备用图片：")[1].strip()
-                if os.path.exists(image_path):
-                    # 使用 base64 编码的图片
-                    if not os.path.isabs(image_path):
-                        base_dir = "/home/hjh/BOT/NCBOT"
-                        abs_image_path = os.path.join(base_dir, "tool", os.path.basename(image_path))
-                    else:
-                        abs_image_path = image_path
+            if "备用图片" in line:
+                try:
+                    parts = line.split("备用图片：")
+                    if len(parts) > 1:
+                        image_path = parts[1].strip()
+                        if os.path.exists(image_path):
+                            img_base64 = image_to_base64(image_path)
+                            if img_base64:
+                                联机_msgs.append({"type": "image", "data": {"file": img_base64}})
+                except:
+                    pass
                     
-                    # 转换为 base64
-                    backup_img_base64 = image_to_base64(abs_image_path)
-                    if backup_img_base64:
-                        联机_nodes.append({"type": "image", "data": {"file": backup_img_base64}})
-                    break
-    nodes.append({
-        "type": "node",
-        "data": {
-            "uin": user_id,
-            "nickname": user_nickname,
-            "content": 联机_nodes
-        }
-    })
+        nodes.append(napcat_service.construct_node(user_id, user_nickname, 联机_msgs))
 
-    # 4. 一次性发出
     # 计算资源数量
     single_count = len([line for line in 单机_lines if "链接" in line])
     multi_count = len([line for line in 联机_lines if "种子链接" in line])
@@ -540,8 +493,7 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
         summary += f" (单机: {single_count} 个)"
     if multi_count > 0:
         summary += f" (联机: {multi_count} 个)"
-    
-    # 5. 使用全局 NapCat 服务发送
+
     return await napcat_service.send_group_forward_msg(
         group_id=group_id,
         nodes=nodes,

@@ -97,5 +97,56 @@ class NapCatService:
             logging.error(f"[NapCat] 图片转Base64失败: {e}")
             return None
 
+
+    async def smart_send_group_msg(self, group_id: Union[int, str], content: str, bot_api=None, priority: str = "auto", reply_message_id: str = None) -> bool:
+        """
+        智能发送群消息：根据长度自动选择直接发送或伪造合并转发
+        
+        :param group_id: 群号
+        :param content: 消息内容
+        :param bot_api: NcatBot的API实例 (用于直接发送)
+        :param priority: 优先级 'auto'|'direct'|'forward'
+        :param reply_message_id: 回复的消息ID (仅在直接发送时有效)
+        """
+        threshold = GLOBAL_CONFIG.get("message.threshold", 200)
+        use_forward = GLOBAL_CONFIG.get("message.use_forward", True)
+        
+        should_forward = False
+        if priority == "forward":
+            should_forward = True
+        elif priority == "auto":
+            if use_forward and len(content) > threshold:
+                should_forward = True
+        
+        if should_forward:
+            # 使用伪造转发
+            bot_uin = GLOBAL_CONFIG.get("bot.qq", "10000")
+            bot_name = GLOBAL_CONFIG.get("bot.name", "系统消息")
+            nodes = [self.construct_node(bot_uin, bot_name, content)]
+            return await self.send_group_forward_msg(group_id, nodes)
+        else:
+            # 使用直接发送
+            if bot_api:
+                try:
+                    from ncatbot.core.message import MessageChain
+                    from ncatbot.core.event.message_segment.message_segment import Text, Reply
+                    
+                    chain_list = []
+                    if reply_message_id:
+                        chain_list.append(Reply(reply_message_id))
+                    chain_list.append(Text(content))
+                    
+                    await bot_api.post_group_msg(
+                        group_id=int(group_id),
+                        rtf=MessageChain(chain_list)
+                    )
+                    return True
+                except Exception as e:
+                    logging.error(f"[SmartSend] 直接发送失败: {e}")
+                    return False
+            else:
+                logging.error("[SmartSend] 未提供 bot_api，无法直接发送消息")
+                return False
+
 # 全局单例
 napcat_service = NapCatService()

@@ -30,6 +30,7 @@ from ncatbot.core.message import GroupMessage
 from ncatbot.core.event.message_segment.message_segment import Text, At
 from .tool.daily_task import DailyTaskManager
 from common.db import db_manager
+from common.utils import is_admin
 
 # 获取日志记录器
 _log = logging.getLogger(__name__)
