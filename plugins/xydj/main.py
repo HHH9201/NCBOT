@@ -1,3 +1,4 @@
+# /home/hjh/BOT/NCBOT/plugins/xydj/main.py
 # -*- coding: utf-8 -*-
 """
 咸鱼单机（单机版）+ ByrutGame（联机版）
@@ -9,9 +10,9 @@ import time
 import json
 import asyncio
 import logging
-import urllib3
+import io
 import yaml
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
@@ -24,7 +25,7 @@ from common import (
     napcat_service, ai_service, GLOBAL_CONFIG,
     image_to_base64, normalize_text, convert_roman_to_arabic,
     load_yaml, save_yaml, clean_filename,
-    http_client, DEFAULT_HEADERS, db_manager
+    DEFAULT_HEADERS, db_manager, AsyncHttpClient
 )
 
 # 配置更清爽的日志格式，去掉进程和线程信息
@@ -53,12 +54,13 @@ PROXY = LOCAL_CONFIG.get('proxy') or GLOBAL_CONFIG.get('proxy')
 
 # 图片路径处理
 TOOL_DIR = Path(__file__).parent / "tool"
-QQ_IMG = str(TOOL_DIR / GLOBAL_CONFIG.get('images', {}).get('qq_img', "TG.png"))
+QQ_IMG = str(TOOL_DIR / GLOBAL_CONFIG.get('images', {}).get('qq_img', "xcx.jpg"))
 BACKUP_IMG = str(TOOL_DIR / GLOBAL_CONFIG.get('images', {}).get('backup_img', "种子.png"))
 
 bot = CompatibleEnrollment
 
-urllib3.disable_warnings()
+# 快速HTTP客户端：禁用重试，缩短默认超时
+FAST_HTTP = AsyncHttpClient(retry_count=1, retry_delay=0.0, timeout=15)
 
 CACHE_FILE = Path(__file__).parent / "tool" / "cache" / "game_name_cache.yaml"
 _title_cache = load_yaml(CACHE_FILE)
@@ -140,56 +142,46 @@ async def translate_to_chinese_title(eng: str) -> str:
     return zh
 
 # ------------------------------------------------------------------
-# 1. 提取英文关键词 + 中文展示名（返回 tuple）
+# 工具函数
 # ------------------------------------------------------------------
-def extract_english_name(title: str) -> tuple[str, str]:
+def _is_mainly_english(text: str) -> bool:
+    return len(re.findall(r'[a-zA-Z]', text)) > len(re.findall(r'[\u4e00-\u9fff]', text))
 
+def extract_english_name(title: str) -> tuple[str, str]:
     segments = title.split('|')
     
-    # 寻找最简洁的英文游戏名
     english_part = ""
-    for segment in reversed(segments):  # 从后往前找英文段
+    for segment in reversed(segments):
         segment = segment.strip()
-        # 如果这段主要是英文字符，就认为是英文段
-        if len(re.findall(r'[a-zA-Z]', segment)) > len(re.findall(r'[\u4e00-\u9fff]', segment)):
+        if _is_mainly_english(segment):
             english_part = segment
             break
     
-    # 如果没找到英文段，用最后一段
     if not english_part:
         english_part = segments[-1] if segments else title
     
-    # 中文展示名：从第一个中文段开始，到英文段之前的所有段
     chinese_display_parts = []
     for segment in segments:
         segment = segment.strip()
-        # 如果这段主要是英文字符，就停止收集
-        if len(re.findall(r'[a-zA-Z]', segment)) > len(re.findall(r'[\u4e00-\u9fff]', segment)):
+        if _is_mainly_english(segment):
             break
         chinese_display_parts.append(segment)
     
-    # 如果没找到中文段，用第一段
     if not chinese_display_parts:
         chinese_display_parts = [segments[0]] if segments else [title]
     
     chinese_display = ' | '.join(chinese_display_parts)
     
-    # 清理英文部分：去掉版本号、年份、特殊符号等
-    # 去掉括号及其内容
     english_part = re.sub(r'\([^)]*\)', '', english_part)
     english_part = re.sub(r'\[[^\]]*\]', '', english_part)
-    # 去掉斜杠后的重复内容
     english_part = english_part.split('/')[0]
-    # 去掉特殊符号和多余空格
     english_part = re.sub(r'[^\w\s]', ' ', english_part)
     english_part = re.sub(r'\s+', ' ', english_part).strip()
     
-    # 只保留前3-4个核心单词
     words = english_part.split()
     if len(words) > 4:
         english_part = ' '.join(words[:4])
     
-    # 罗马→阿拉伯数字（仅英文关键词）
     english_part = convert_roman_to_arabic(english_part)
     
     return english_part.strip(), chinese_display.strip()
@@ -208,7 +200,7 @@ async def search_game(game_name: str):
         print(f"[XianYu Search] Requesting: {url}")
         # 咸鱼单机不使用代理，带上 Cookie
         headers = {"Cookie": XYDJ_COOKIE} if XYDJ_COOKIE else None
-        html = await http_client.get_text(url, proxy="", headers=headers)
+        html = await FAST_HTTP.get_text(url, proxy="", headers=headers, timeout=12)
         if not html:
             print(f"[XianYu Search] No HTML returned")
             return None, None
@@ -250,7 +242,7 @@ async def search_game(game_name: str):
                     key_info.append(part)
             
             # 构建美观的格式
-            display_text = f"🔹 {idx+1}. {game_name_extracted}"
+            display_text = f"{idx+1}. {game_name_extracted}"
             if key_info:
                 display_text += f" | {' | '.join(key_info[:3])}"
             
@@ -268,15 +260,26 @@ async def extract_download_info(game_url: str):
     # 检查缓存
     data = await get_cache_from_db(game_url, "detail")
     if data:
-        print(f"[XianYu Detail] Cache hit for: {game_url}")
-        return data
+        # 如果缓存中的解压密码看起来像是误抓的提取码（4位），则忽略缓存重新抓取
+        is_bad_cache = False
+        for line in data:
+            if "解压密码" in line:
+                m = re.search(r'【([a-zA-Z0-9]{4})】', line)
+                if m:
+                    is_bad_cache = True
+                    break
+        if not is_bad_cache:
+            print(f"[XianYu Detail] Cache hit for: {game_url}")
+            return data
+        else:
+            print(f"[XianYu Detail] Bad cache detected for {game_url}, re-fetching...")
 
     async with SEARCH_SEMAPHORE:
         print(f"[XianYu Detail] Processing: {game_url}")
         try:
             # 咸鱼单机详情页也不使用代理，带上 Cookie
             headers = {"Cookie": XYDJ_COOKIE} if XYDJ_COOKIE else None
-            html = await http_client.get_text(game_url, proxy="", headers=headers, timeout=60)
+            html = await FAST_HTTP.get_text(game_url, proxy="", headers=headers, timeout=20)
             if not html:
                 print(f"[XianYu Detail] No HTML returned")
                 return ["无法获取页面内容"]
@@ -288,95 +291,84 @@ async def extract_download_info(game_url: str):
                 return ["未找到下载区域"]
             
             print(f"[XianYu Detail] Download box found")
-            results = []
             
-            # 提取解压密码 - 增强版逻辑
-            password_found = False
+            # --- 提取逻辑重构 ---
+            password_val = "未找到"
+            pan_codes = [] # 改为列表，支持多个网盘提取码
             
-            # 方法1: 查找 data-clipboard-text 属性（最准确）
-            clipboard_elements = box.select('[data-clipboard-text]')
-            for el in clipboard_elements:
-                text = el.get_text(strip=True)
-                val = el['data-clipboard-text'].strip()
-                if not val:
+            # 1. 遍历所有 btn-group 分组（处理网盘提取码和部分解压密码）
+            groups = box.select(".btn-group")
+            for group in groups:
+                a_tag = group.select_one("a[href*='goto?down=']")
+                if not a_tag:
                     continue
                 
-                # 如果是网盘链接，跳过
-                if 'pan.baidu.com' in val or 'drive' in val:
-                    continue
-                    
-                # 如果文本包含密码相关关键词
-                if any(k in text for k in ['密码', '解压']):
-                    results.append(f"解压密码: 【{val}】")
-                    password_found = True
-                    break
-            
-            # 方法2: 如果没找到，尝试在整个文本中正则搜索
-            if not password_found:
-                box_text = box.get_text(separator="\n", strip=True)
-                # 匹配：解压密码：xxx 或 密码: xxx
-                # 排除 "未找到" 等字样
-                pwd_patterns = [
-                    r'(?:解压)?密码[:：]\s*([^\s\u4e00-\u9fa5]+)',  # 密码通常不含中文
-                    r'(?:解压)?密码[:：]\s*(\S+)'
-                ]
+                label = a_tag.get_text(strip=True)
+                btn = group.select_one("button[data-clipboard-text]")
+                val = (btn.get("data-clipboard-text") or "").strip() if btn else ""
                 
-                for pattern in pwd_patterns:
-                    match = re.search(pattern, box_text)
-                    if match:
-                        pwd = match.group(1).strip()
-                        # 过滤无效密码
-                        if pwd and pwd not in ['未找到', '暂无'] and len(pwd) > 1:
-                            results.append(f"解压密码: 【{pwd}】")
-                            password_found = True
-                            break
+                if '解压密码' in label and val:
+                    # 只有长度 > 4 的才认为是真正的解压密码
+                    if len(val) > 4:
+                        password_val = val
+                elif any(k in label for k in ['百度', '天翼', '阿里', '迅雷', '夸克']) and val:
+                    # 只有 4 位的才认为是提取码
+                    if re.fullmatch(r'[A-Za-z0-9]{4}', val):
+                        pan_codes.append(f"{label}提取码: 【{val}】")
+            
+            # 2. 从 .down-info 区域提取（处理你提供的这种新情况）
+            if password_val == "未找到":
+                info_list = box.select(".down-info li")
+                for li in info_list:
+                    label_el = li.select_one(".data-label")
+                    info_el = li.select_one(".info")
+                    if label_el and info_el:
+                        label_text = label_el.get_text(strip=True)
+                        info_text = info_el.get_text(strip=True)
+                        if '解压密码' in label_text and info_text:
+                            # 过滤掉“自动复制”之类的提示语，取核心词
+                            if "点击" not in info_text and "复制" not in info_text:
+                                password_val = info_text
+                            else:
+                                # 如果有提示语，尝试提取加粗部分或特定词
+                                b_tag = info_el.select_one("b")
+                                if b_tag:
+                                    password_val = b_tag.get_text(strip=True)
 
-            # 如果还是没找到，默认提示
-            if not password_found:
-                results.append("解压密码: 未找到")
-            
-            # 提取百度网盘提取码
-            pan_code_found = False
-            # 同样先找 clipboard
-            for el in clipboard_elements:
-                text = el.get_text(strip=True)
-                val = el['data-clipboard-text'].strip()
-                if not val: continue
-                
-                if '百度' in text or '提取码' in text:
-                     # 简单的4位提取码检查
-                     if len(val) == 4 and re.match(r'^[a-zA-Z0-9]+$', val):
-                         results.append(f"百度网盘提取码: {val}")
-                         pan_code_found = True
-                         break
-            
-            if not pan_code_found:
-                # 正则查找
+            # 3. 兜底：如果还没找到，尝试全局正则（排除干扰）
+            if password_val == "未找到":
                 box_text = box.get_text(separator="\n", strip=True)
-                code_match = re.search(r'提取码[:：]\s*([a-zA-Z0-9]{4})', box_text)
-                if code_match:
-                    results.append(f"百度网盘提取码: {code_match.group(1)}")
-                else:
-                    results.append("百度网盘提取码: 未找到")
-                
+                # 匹配：解压密码：xxx，要求至少5位
+                m = re.search(r'解压密码[:：]\s*([^\s\u4e00-\u9fa5]{4,})', box_text)
+                if m: password_val = m.group(1).strip()
+            
+            results = [f"解压密码: 【{password_val}】"]
+            
+            # 添加网盘提取码
+            if pan_codes:
+                results.extend(pan_codes)
+            else:
+                results.append("百度网盘提取码: 未找到")
+            
             # 提取下载链接
+            found_any_link = False
             for a in box.select("a[target='_blank'][href*='goto?down=']"):
                 name = a.get_text(strip=True)
                 if '解压密码' in name:
                     continue
                 jump_url = urljoin(game_url, a['href'])
-                print(f"[XianYu Detail] Resolving redirect for: {name} -> {jump_url}")
                 
-                # 使用相同的 Headers (包含 Cookie) 来解析重定向
-                # 某些重定向（如 goto）需要登录态才能正确跳转
-                real_url = await http_client.get_redirect_url(jump_url, headers=headers, timeout=30)
-                
+                # 解析重定向
+                real_url = await FAST_HTTP.get_redirect_url(jump_url, headers=headers, timeout=10)
                 if not real_url:
-                    print(f"[XianYu Detail] Failed to resolve redirect for: {name}")
                     real_url = jump_url
-                else:
-                    print(f"[XianYu Detail] Resolved: {real_url}")
+                
                 results.append(f"{name}: {real_url}")
+                found_any_link = True
+
+            if not found_any_link:
+                results.append("\n未获取到任何网盘链接，可能是 Cookie 已到期，请联系管理员更新。")
+
             
             print(f"[XianYu Detail] Results: {results}")
             
@@ -425,7 +417,7 @@ async def search_byrut(name: str) -> list:
         }
         
         try:
-            html = await http_client.get_text(url, params=params, verify_ssl=False, timeout=20, proxy=PROXY)
+            html = await FAST_HTTP.get_text(url, params=params, verify_ssl=False, timeout=12, proxy=PROXY)
             if not html:
                 print(f"[Byrut Search] No HTML returned")
                 # 缓存空结果
@@ -484,6 +476,10 @@ def _apply_backup_solution(item: dict, error_type: str) -> None:
     # 使用原始链接作为备用下载链接
     backup_torrent_url = item.get('href', '')
     
+    # 替换域名
+    if "napcat.1783069903.workers.dev" in backup_torrent_url:
+        backup_torrent_url = backup_torrent_url.replace("https://napcat.1783069903.workers.dev", "https://byrutgame.org")
+    
     # 检查备用图片是否存在
     backup_image = str(TOOL_DIR / "种子.png")
     if not os.path.exists(backup_image):
@@ -527,7 +523,7 @@ async def fetch_byrut_detail(item: dict) -> None:
         try:
             # 使用 http_client 获取内容，自动处理重试和 User-Agent 轮换
             # 传递 verify_ssl=False 以避免 SSL 错误
-            html = await http_client.get_text(proxy_url, verify_ssl=False, timeout=20, proxy=PROXY)
+            html = await FAST_HTTP.get_text(proxy_url, verify_ssl=False, timeout=15, proxy=PROXY)
             
             if not html:
                 print(f"[Byrut Detail] No HTML returned")
@@ -620,11 +616,10 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
 
     # 3. 联机版节点
     if 联机_lines:
-        联机_msgs = [{"type": "text", "data": {"text": line}} for line in 联机_lines]
-        
-        # 检查备用图片
+        联机_msgs = []
         for line in 联机_lines:
-            if "备用图片" in line:
+            # 检查是否是备用图片行
+            if "备用图片：" in line:
                 try:
                     parts = line.split("备用图片：")
                     if len(parts) > 1:
@@ -633,8 +628,12 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
                             img_base64 = image_to_base64(image_path)
                             if img_base64:
                                 联机_msgs.append({"type": "image", "data": {"file": img_base64}})
-                except:
-                    pass
+                                continue  # 成功添加图片后跳过添加文本
+                except Exception as e:
+                    print(f"图片处理异常: {e}")
+            
+            # 默认作为文本添加
+            联机_msgs.append({"type": "text", "data": {"text": line}})
                     
         nodes.append(napcat_service.construct_node(user_id, user_nickname, 联机_msgs))
 
@@ -678,7 +677,7 @@ class Xydj(BasePlugin):
         init_cache_db()
 
     async def countdown(self, msg, group_id):
-        await asyncio.sleep(40)
+        await asyncio.sleep(20)
         session = self.sessions.get(group_id)
         if session and not session.processing:
             self._cleanup(group_id)
@@ -711,22 +710,15 @@ class Xydj(BasePlugin):
                 单机_lines = await extract_download_info(game['url'])
                 if 单机_lines:
                     print(f"[Single Player] Found lines: {len(单机_lines)}")
-                    单机内容.append("🎮 【单机版】\n")
-                    单机内容.append(f"📌 游戏名字：{chinese_display}\n")   # ← 中文展示名
+                    单机内容.append("【单机版】\n")
+                    单机内容.append(f"游戏名字：{chinese_display}\n")   # ← 中文展示名
                     # 逐行加 \n 保证密码/链接后都换行
                     for line in 单机_lines:
-                        if "解压密码" in line:
-                            单机内容.append(f"🔑 {line}\n")
-                        elif "百度网盘" in line:
-                            单机内容.append(f"💾 {line}\n")
-                        elif "链接" in line:
-                            单机内容.append(f"🌐 {line}\n")
-                        else:
-                            单机内容.append(f"📋 {line}\n")
+                        单机内容.append(f"{line}\n")
                 else:
                     print(f"[Single Player] No lines found")
-                    单机内容.append("🎮 【单机版】\n")
-                    单机内容.append("❌ 未找到相关资源\n")
+                    单机内容.append("【单机版】\n")
+                    单机内容.append("未找到相关资源\n")
                 return 单机内容
 
             async def process_multi_player():
@@ -750,33 +742,33 @@ class Xydj(BasePlugin):
                 联机内容 = []
                 if byrut_results:
                     print(f"[Multi Player] Found {len(byrut_results)} results")
-                    联机内容.append("🎮 【联机版】\n")
-                    联机内容.append(f"📌 游戏名字：{english_keyword}\n")   # ← 英文展示名
+                    联机内容.append("【联机版】\n")
+                    联机内容.append(f"游戏名字：{english_keyword}\n")   # ← 英文展示名
                     
                     for idx, item in enumerate(byrut_results, 1):
                         if len(byrut_results) > 1:
                             联机内容.append(f"\n{idx}. 资源 {idx}\n")
                         
-                        联机内容.append(f"🔑 解压密码：【online-fix.me】\n")
-                        联机内容.append(f"⏰ 更新时间：{item['update_time']}\n")
+                        联机内容.append(f"解压密码：【online-fix.me】\n")
+                        联机内容.append(f"更新时间：{item['update_time']}\n")
                         
                         if item.get('torrent_url'):
-                            联机内容.append(f"🌐 种子链接：{item['torrent_url']}\n")
+                            联机内容.append(f"种子链接：{item['torrent_url']}\n")
                         else:
-                            联机内容.append(f"❌ 种子链接：暂无\n")
+                            联机内容.append(f"种子链接：暂无\n")
                         
                         # 如果有备用图片，添加图片标记
                         if item.get('backup_image'):
-                            联机内容.append(f"🖼️ 备用图片：{item['backup_image']}\n")
+                            联机内容.append(f"备用图片：{item['backup_image']}\n")
                     
-                    联机内容.append("💡 使用提示：下载种子后使用BT客户端打开即可\n")
+                    联机内容.append("使用提示：下载种子后使用BT客户端打开即可\n")
                 else:
                     print(f"[Multi Player] No results found")
-                    联机内容.append("🎮 【联机版】\n")
-                    联机内容.append("❌ 未找到相关资源\n")
-                    联机内容.append("🔑 通用解压密码：【online-fix.me】\n")
-                    联机内容.append("📚 查看教程：《搜索和使用联机游戏》\n")
-                    联机内容.append("🌐 https://www.yuque.com/lanmeng-ijygo/ey7ah4/fe9hfep86cw7coku?singleDoc#\n")
+                    联机内容.append("【联机版】\n")
+                    联机内容.append("未找到相关资源\n")
+                    联机内容.append("通用解压密码：【online-fix.me】\n")
+                    联机内容.append("查看教程：搜索和使用联机游戏\n")
+                    联机内容.append("https://www.yuque.com/lanmeng-ijygo/ey7ah4/fe9hfep86cw7coku?singleDoc#\n")
                 return 联机内容
 
             # 并行执行单机版和联机版资源获取
@@ -796,7 +788,7 @@ class Xydj(BasePlugin):
                 联机内容 = ["【联机版】获取资源时出错"]
             
             # 4. 一次性转发
-            赞助内容 = ["正规流量卡不是物联卡，官方客服可查套餐，官方APP可自己查余额\n有问题请扣主人~~：\nhttps://ym.ksjhaoka.com/?s=q9thdGIs326398"]
+            赞助内容 = ["帮我微信登录一下，退出即可，谢谢谢谢谢！"]
             
             # 如果两条都空，再提示「部分未找到」
             if not 单机内容 and not 联机内容:
@@ -850,7 +842,7 @@ class Xydj(BasePlugin):
             
             choice = int(choice)
             await self.api.post_group_msg(
-                group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"已选择第 {choice} 个游戏，请等待大概1分钟！！！")])
+                group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"已选择第 {choice} 个游戏,我帮你找游戏，你帮我点一下：\n#小程序://工具铺/AN8wdJKGPenxRri\n点击登录退出即可,谢谢谢谢谢~")])
             )
             
             session.processing = True
@@ -889,14 +881,14 @@ class Xydj(BasePlugin):
                 # 如果只有一个游戏结果，直接自动处理
                 if len(games) == 1:
                     await self.api.post_group_msg(
-                        group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text("搜索到1个游戏，自动为您获取资源信息，请等待大概1分钟！！！")])
+                        group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text("我帮你找游戏，你帮我点一下：#小程序://工具铺/AN8wdJKGPenxRri  点击登录退出即可,谢谢谢谢谢~")])
                     )
                     await self.process_single_game(games[0], msg)
                     return
                 
                 # 多个游戏结果，创建新会话
                 await self.api.post_group_msg(
-                    group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"🎯 发现 {len(games)} 款游戏\n{text_result}\n⏰ 30秒内回复序号选择 | 回复 0 取消操作")])
+                    group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"🎯 发现 {len(games)} 款游戏\n{text_result}\n⏰ 20秒内回复序号选择 | 回复 0 取消操作")])
                 )
                 
                 # 创建会话并保存
