@@ -1,25 +1,35 @@
-root: '123456'
+adapters:
+- config:
+    check_napcat_update: false
+    enable_webui: false
+    remote_mode: true
+    report_forward_message_detail: true
+    report_self_message: false
+    stop_napcat: false
+    webui_token: NcatBot
+    webui_uri: http://localhost:6099
+    ws_listen_ip: localhost
+    ws_token: he031701
+    ws_uri: ws://101.35.164.122:3001
+  enabled: true
+  platform: qq
+  type: napcat
+bot_uin: '58805194'
 bt_uin: '58805194'
-enable_webui_interaction: false
-debug: false
-github_proxy: null
 check_ncatbot_update: true
+debug: false
+enable_webui_interaction: false
+logging:
+  event_log_levels:
+    meta_event: NONE
+plugin:
+  auto_install_pip_deps: true
+  load_plugin: false
+  plugin_blacklist: []
+  plugin_configs: {}
+  plugin_whitelist: []
+  plugins_dir: plugins
+  skip_plugin_load: false
+root: '123456'
 skip_ncatbot_install_check: false
 websocket_timeout: 15
-napcat:
-  ws_uri: ws://101.35.164.122:3001
-  ws_token: he031701
-  ws_listen_ip: localhost
-  webui_uri: http://localhost:6099
-  webui_token: NcatBot
-  enable_webui: false
-  check_napcat_update: false
-  stop_napcat: false
-  remote_mode: true
-  report_self_message: false
-  report_forward_message_detail: true
-plugin:
-  plugins_dir: plugins
-  plugin_whitelist: []
-  plugin_blacklist: []
-  skip_plugin_load: false

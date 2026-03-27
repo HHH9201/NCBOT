@@ -1,13 +1,5 @@
-# welcome.py
-# -*- coding: utf-8 -*-
-"""
-Welcome & Goodbye (No AI Version)
-功能：
-  1. 记录成员退群次数 & 上次退群时间
-  2. 成员加群时随机发送欢迎语
-  3. 成员退群时记录并发送告别
-  4. 所有时间按北京时间展示
-"""
+# /home/hjh/BOT/NCBOT/plugins/welcome/main.py
+# NcatBot 5.x 欢迎插件
 import logging
 import yaml
 import asyncio
@@ -17,20 +9,25 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List
 
-from ncatbot.plugin import BasePlugin, CompatibleEnrollment
-from ncatbot.core.message import MessageChain
-from ncatbot.core.event.message_segment.message_segment import Text, At
+from ncatbot.plugin import BasePlugin
+from ncatbot.core import registrar
+from ncatbot.event.qq import NoticeEvent
 
-# ---------- 配置 ----------
-CN_TZ = timezone(timedelta(hours=8))
-bot = CompatibleEnrollment
+# 配置日志
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ---------- 工具 ----------
+# 北京时间时区
+CN_TZ = timezone(timedelta(hours=8))
+
+
 def _now_beijing() -> str:
+    """获取当前北京时间"""
     return datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
+
 def _fmt_time(ts: str | None) -> str:
+    """格式化时间字符串"""
     if not ts:
         return ""
     try:
@@ -43,30 +40,31 @@ def _fmt_time(ts: str | None) -> str:
     except Exception:
         return ts
 
-# ---------- 插件主体 ----------
-class Welcome(BasePlugin):
-    name = "Welcome"
-    version = "1.0.1"
 
-    def __init__(self, event_bus=None, **kwargs):
-        super().__init__(event_bus=event_bus, **kwargs)
-        # 数据文件路径：/home/hjh/BOT/NCBOT/data/Welcome/leave_counts.yaml
+class Welcome(BasePlugin):
+    """欢迎插件 - 成员加群欢迎、退群记录和告别"""
+    name = "Welcome"
+    version = "1.0.0"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # 数据文件路径
         self.data_dir = Path("/home/hjh/BOT/NCBOT/data/Welcome")
         self.leave_count_file = self.data_dir / "leave_counts.yaml"
-        
-        # 配置文件路径：/home/hjh/BOT/NCBOT/plugins/welcome/tool/config.yaml
+
+        # 配置文件路径
         self.config_file = Path(__file__).parent / "tool" / "config.yaml"
-        
+
         self.leave_records: Dict[str, dict] = {}
         self.welcome_messages: List[str] = []
         self.goodbye_template: str = "成员 {user_id} 已离开，这是第 {count} 次离开，有缘再见👋"
-        
+
         self._ensure_dir()
-        
         # 同步加载一次配置和数据（初始化）
         self._load_sync()
 
     def _ensure_dir(self):
+        """确保数据目录存在"""
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     def _load_sync(self):
@@ -80,7 +78,7 @@ class Welcome(BasePlugin):
                     self.goodbye_template = config.get("goodbye_template", self.goodbye_template)
             except Exception as e:
                 logger.error(f"[Welcome] 加载配置失败: {e}")
-        
+
         # 加载数据
         if self.leave_count_file.exists():
             try:
@@ -92,7 +90,7 @@ class Welcome(BasePlugin):
                 self.leave_records = {}
         else:
             self.leave_records = {}
-        
+
         # 如果没有配置欢迎语，使用默认兜底
         if not self.welcome_messages:
             self.welcome_messages = ["欢迎新人入群！🎉"]
@@ -102,7 +100,6 @@ class Welcome(BasePlugin):
     async def _save_async(self):
         """异步保存数据"""
         try:
-            # 将数据转为 YAML 字符串
             data_str = yaml.dump(self.leave_records, allow_unicode=True)
             async with aiofiles.open(self.leave_count_file, "w", encoding="utf-8") as f:
                 await f.write(data_str)
@@ -110,6 +107,7 @@ class Welcome(BasePlugin):
             logger.error(f"[Welcome] 保存数据失败: {e}")
 
     def _norm(self, rec):
+        """规范化记录格式"""
         if isinstance(rec, int):
             return {"count": rec, "last_leave": None, "history": []}
         return {
@@ -118,21 +116,18 @@ class Welcome(BasePlugin):
             "history": rec.get("history", [])
         }
 
-    # ---------- 事件 ----------
-    @bot.notice_event
-    async def on_notice(self, notice):
-        """统一处理加群 / 退群"""
-        # 处理NoticeEvent对象或dict类型
-        if hasattr(notice, 'notice_type'):
-            notice_type = notice.notice_type
-            group_id = notice.group_id if hasattr(notice, 'group_id') else None
-            user_id = str(notice.user_id) if hasattr(notice, 'user_id') else None
-        else:
-            notice_type = notice.get("notice_type")
-            group_id = notice.get("group_id")
-            user_id = str(notice.get("user_id"))
-        
-        if notice_type not in ("group_increase", "group_decrease"):
+    @registrar.on_notice()
+    async def on_notice(self, event: NoticeEvent):
+        """处理群通知事件（加群/退群）"""
+        # 只处理群相关通知
+        if not hasattr(event, 'group_id'):
+            return
+
+        notice_type = getattr(event, 'notice_type', None)
+        group_id = event.group_id
+        user_id = str(getattr(event, 'user_id', None))
+
+        if not notice_type or not user_id:
             return
 
         # ---- 加群 ----
@@ -140,38 +135,38 @@ class Welcome(BasePlugin):
             rec = self.leave_records.setdefault(
                 user_id, {"count": 0, "last_leave": None, "history": []}
             )
-            
+
             # 随机选择欢迎语
             welcome_msg = random.choice(self.welcome_messages)
-            
+
             # 如果有退群记录，加上提示
             if rec['last_leave']:
                 welcome_msg += f"\n(欢迎回家！上次离开：{_fmt_time(rec['last_leave'])})"
 
-            await self.api.post_group_msg(
+            # 发送欢迎消息
+            await self.api.qq.post_group_msg(
                 group_id=group_id,
-                rtf=MessageChain([At(user_id), Text(" " + welcome_msg)])
+                message=f"[CQ:at,qq={user_id}] {welcome_msg}"
             )
 
         # ---- 退群 ----
         elif notice_type == "group_decrease":
-            user_id = str(notice.get("user_id"))          # 被退者 QQ
             rec = self.leave_records.setdefault(
                 user_id, {"count": 0, "last_leave": None, "history": []}
             )
             rec["count"] += 1
             rec["last_leave"] = _now_beijing()
             rec["history"].append(rec["last_leave"])
-            
+
             # 异步保存
             await self._save_async()
 
-            # 使用配置的模板
+            # 使用配置的模板发送告别消息
             text = self.goodbye_template.format(user_id=user_id, count=rec['count'])
-            await self.api.post_group_msg(
+            await self.api.qq.post_group_msg(
                 group_id=group_id,
-                rtf=MessageChain([Text(text)])
+                message=text
             )
 
     async def on_load(self):
-        logger.info("[Welcome] 插件已加载，版本 %s", self.version)
+        logger.info(f"🚀 {self.name} v{self.version} 已加载")
