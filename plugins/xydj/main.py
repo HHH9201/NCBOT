@@ -10,15 +10,15 @@ import time
 import json
 import asyncio
 import logging
-import io
 import yaml
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-from ncatbot.plugin import BasePlugin, CompatibleEnrollment
-from ncatbot.core.message import GroupMessage
-from ncatbot.core import Text, At, Reply, MessageChain, Image
+from ncatbot.plugin import BasePlugin
+from ncatbot.core import registrar
+from ncatbot.event.qq import GroupMessageEvent
+from ncatbot.types import PlainText, At, Reply, MessageArray, Image
 
 # 引入全局服务和配置
 from common import (
@@ -54,10 +54,21 @@ PROXY = LOCAL_CONFIG.get('proxy') or GLOBAL_CONFIG.get('proxy')
 
 # 图片路径处理
 TOOL_DIR = Path(__file__).parent / "tool"
-QQ_IMG = str(TOOL_DIR / GLOBAL_CONFIG.get('images', {}).get('qq_img', "xcx.jpg"))
-BACKUP_IMG = str(TOOL_DIR / GLOBAL_CONFIG.get('images', {}).get('backup_img', "种子.png"))
+QQ_IMG = str(TOOL_DIR / LOCAL_CONFIG.get('images', {}).get('qq_img', "xcx.jpg"))
+BACKUP_IMG = str(TOOL_DIR / LOCAL_CONFIG.get('images', {}).get('backup_img', "种子.png"))
 
-bot = CompatibleEnrollment
+# 图片Base64缓存
+_image_base64_cache: Dict[str, str] = {}
+
+def get_image_base64_cached(image_path: str) -> Optional[str]:
+    """获取图片Base64，带缓存"""
+    if image_path in _image_base64_cache:
+        return _image_base64_cache[image_path]
+    
+    result = image_to_base64(image_path)
+    if result:
+        _image_base64_cache[image_path] = result
+    return result
 
 # 快速HTTP客户端：禁用重试，缩短默认超时
 FAST_HTTP = AsyncHttpClient(retry_count=1, retry_delay=0.0, timeout=15)
@@ -72,49 +83,154 @@ CACHE_TTL = 3600
 # 全局并发限制信号量
 SEARCH_SEMAPHORE = asyncio.Semaphore(5)
 
-# -------------------- 数据库缓存工具 --------------------
-def init_cache_db():
-    """初始化缓存表"""
-    sql = """
-    CREATE TABLE IF NOT EXISTS xydj_cache (
-        key TEXT PRIMARY KEY,
-        value TEXT,
-        type TEXT,
-        timestamp REAL
-    )
-    """
-    db_manager.execute_update(sql)
+# LRU 内存缓存（限制1000条，避免内存无限增长）
+from functools import lru_cache
+from collections import OrderedDict
 
-async def get_cache_from_db(key: str, cache_type: str):
-    """从数据库获取缓存"""
+class LRUCache:
+    """简单的LRU缓存实现"""
+    def __init__(self, capacity: int = 1000):
+        self.capacity = capacity
+        self.cache = OrderedDict()
+        self.lock = asyncio.Lock()
+    
+    async def get(self, key: str):
+        async with self.lock:
+            if key in self.cache:
+                # 移动到末尾（最近使用）
+                self.cache.move_to_end(key)
+                return self.cache[key]
+            return None
+    
+    async def set(self, key: str, value):
+        async with self.lock:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+            else:
+                if len(self.cache) >= self.capacity:
+                    # 移除最旧的
+                    self.cache.popitem(last=False)
+            self.cache[key] = value
+    
+    async def clear(self):
+        async with self.lock:
+            self.cache.clear()
+
+# 内存缓存实例
+_memory_cache = LRUCache(capacity=500)
+
+# -------------------- 预编译正则表达式 --------------------
+RE_ENGLISH_CHARS = re.compile(r'[a-zA-Z]')
+RE_CHINESE_CHARS = re.compile(r'[\u4e00-\u9fff]')
+RE_PARENTHESIS = re.compile(r'\([^)]*\)')
+RE_BRACKETS = re.compile(r'\[[^\]]*\]')
+RE_NON_WORD_CHARS = re.compile(r'[^\w\s]')
+RE_MULTIPLE_SPACES = re.compile(r'\s+')
+RE_EXTRACT_CODE = re.compile(r'【([a-zA-Z0-9]{4})】')
+RE_PASSWORD_PATTERN = re.compile(r'解压密码[:：]\s*([^\s\u4e00-\u9fa5]{4,})')
+RE_RUSSIAN_DATE = re.compile(r"(\d{1,2}\s+[а-яА-Я]+\s+\d{4},\s*\d{1,2}:\d{2})")
+RE_TIME_PATTERN = re.compile(r'(\d{1,2}:\d{2})')
+RE_CQ_CODE = re.compile(r'\[CQ:[^\]]+\]')
+
+# -------------------- 数据库缓存工具 --------------------
+_db_initialized = False
+
+def init_cache_db():
+    """初始化缓存表（带缓存检查）"""
+    global _db_initialized
+    if _db_initialized:
+        return
+    
+    try:
+        # 检查表是否存在
+        check_sql = "SELECT name FROM sqlite_master WHERE type='table' AND name='xydj_cache'"
+        result = db_manager.execute_query(check_sql)
+        if result:
+            _db_initialized = True
+            return
+        
+        # 创建表
+        sql = """
+        CREATE TABLE IF NOT EXISTS xydj_cache (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            type TEXT,
+            timestamp REAL
+        )
+        """
+        db_manager.execute_update(sql)
+        _db_initialized = True
+        print("[DB] 缓存表初始化完成")
+    except Exception as e:
+        logging.error(f"[DB] 初始化缓存表失败: {e}")
+
+async def get_cache(key: str, cache_type: str):
+    """获取缓存（先查内存，再查数据库）"""
+    cache_key = f"{cache_type}:{key}"
+    
+    # 1. 先查内存缓存
+    mem_result = await _memory_cache.get(cache_key)
+    if mem_result is not None:
+        print(f"[Cache] Memory hit for: {key}")
+        return mem_result
+    
+    # 2. 再查数据库
     try:
         sql = "SELECT value, timestamp FROM xydj_cache WHERE key = ? AND type = ?"
         rows = await asyncio.to_thread(db_manager.execute_query, sql, (key, cache_type))
         if rows:
             val_json, ts = rows[0]
             if time.time() - ts < CACHE_TTL:
-                return json.loads(val_json)
+                value = json.loads(val_json)
+                # 写入内存缓存
+                await _memory_cache.set(cache_key, value)
+                return value
     except Exception as e:
         logging.error(f"读取缓存失败: {e}")
     return None
 
-async def set_cache_to_db(key: str, value: any, cache_type: str):
-    """写入缓存到数据库"""
-    try:
-        sql = "INSERT OR REPLACE INTO xydj_cache (key, value, type, timestamp) VALUES (?, ?, ?, ?)"
-        val_json = json.dumps(value)
-        await asyncio.to_thread(db_manager.execute_update, sql, (key, val_json, cache_type, time.time()))
-    except Exception as e:
-        logging.error(f"写入缓存失败: {e}")
+async def set_cache(key: str, value: Any, cache_type: str):
+    """写入缓存（内存+数据库）"""
+    cache_key = f"{cache_type}:{key}"
+    
+    # 1. 写入内存缓存
+    await _memory_cache.set(cache_key, value)
+    
+    # 2. 异步写入数据库（不阻塞主流程）
+    async def _save_to_db():
+        try:
+            sql = "INSERT OR REPLACE INTO xydj_cache (key, value, type, timestamp) VALUES (?, ?, ?, ?)"
+            val_json = json.dumps(value)
+            await asyncio.to_thread(db_manager.execute_update, sql, (key, val_json, cache_type, time.time()))
+        except Exception as e:
+            logging.error(f"写入缓存失败: {e}")
+    
+    # 后台执行数据库写入
+    asyncio.create_task(_save_to_db())
 
-async def translate_to_chinese_title(eng: str) -> str:
+# 兼容旧接口
+async def get_cache_from_db(key: str, cache_type: str):
+    """从数据库获取缓存（兼容旧接口）"""
+    return await get_cache(key, cache_type)
+
+async def set_cache_to_db(key: str, value: Any, cache_type: str):
+    """写入缓存到数据库（兼容旧接口）"""
+    await set_cache(key, value, cache_type)
+
+# 翻译缓存待保存标记
+_title_cache_dirty = False
+
+async def translate_to_chinese_title(eng: str, use_modelscope: bool = True) -> str:
     """
     输入英文关键词，返回 Steam 官方中文名；失败则回退原文。
+    
+    :param eng: 英文游戏名
+    :param use_modelscope: 是否使用 ModelScope API (默认True)，否则使用 SiliconFlow
     """
     if not eng:
         return eng
 
-    global _title_cache
+    global _title_cache, _title_cache_dirty
     if eng in _title_cache:
         return _title_cache[eng]
 
@@ -122,14 +238,20 @@ async def translate_to_chinese_title(eng: str) -> str:
     prompt = f"{eng} 的 Steam 官方游戏中文名是什么"
     
     try:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ]
-        # 调用AI服务进行翻译
-        # 注意：这里需要传递正确的参数，原代码中的PROXY变量已被移除，需要从GLOBAL_CONFIG获取
-        proxy = GLOBAL_CONFIG.get('proxy')
-        zh = await ai_service.chat_completions(messages, temperature=0.1, max_tokens=30, proxy=proxy)
+        if use_modelscope:
+            # 使用 ModelScope API
+            zh = await ai_service.modelscope_simple_chat(
+                prompt=prompt,
+                system_prompt=system_prompt
+            )
+        else:
+            # 使用 SiliconFlow API
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ]
+            proxy = GLOBAL_CONFIG.get('proxy')
+            zh = await ai_service.chat_completions(messages, temperature=0.1, max_tokens=30, proxy=proxy)
         
         if not zh:
             zh = eng
@@ -138,14 +260,22 @@ async def translate_to_chinese_title(eng: str) -> str:
         zh = eng
 
     _title_cache[eng] = zh
-    save_yaml(CACHE_FILE, _title_cache)
+    _title_cache_dirty = True
     return zh
+
+async def save_title_cache():
+    """保存翻译缓存到文件"""
+    global _title_cache_dirty
+    if _title_cache_dirty:
+        save_yaml(CACHE_FILE, _title_cache)
+        _title_cache_dirty = False
+        print("[Cache] 翻译缓存已保存")
 
 # ------------------------------------------------------------------
 # 工具函数
 # ------------------------------------------------------------------
 def _is_mainly_english(text: str) -> bool:
-    return len(re.findall(r'[a-zA-Z]', text)) > len(re.findall(r'[\u4e00-\u9fff]', text))
+    return len(RE_ENGLISH_CHARS.findall(text)) > len(RE_CHINESE_CHARS.findall(text))
 
 def extract_english_name(title: str) -> tuple[str, str]:
     segments = title.split('|')
@@ -172,11 +302,11 @@ def extract_english_name(title: str) -> tuple[str, str]:
     
     chinese_display = ' | '.join(chinese_display_parts)
     
-    english_part = re.sub(r'\([^)]*\)', '', english_part)
-    english_part = re.sub(r'\[[^\]]*\]', '', english_part)
+    english_part = RE_PARENTHESIS.sub('', english_part)
+    english_part = RE_BRACKETS.sub('', english_part)
     english_part = english_part.split('/')[0]
-    english_part = re.sub(r'[^\w\s]', ' ', english_part)
-    english_part = re.sub(r'\s+', ' ', english_part).strip()
+    english_part = RE_NON_WORD_CHARS.sub(' ', english_part)
+    english_part = RE_MULTIPLE_SPACES.sub(' ', english_part).strip()
     
     words = english_part.split()
     if len(words) > 4:
@@ -187,18 +317,22 @@ def extract_english_name(title: str) -> tuple[str, str]:
     return english_part.strip(), chinese_display.strip()
 
 # -------------------- xydj 搜索 --------------------
+# 游戏名称过滤关键词（预编译）
+GAME_FILTER_KEYWORDS = {'v', '版', 'dlc', '中文', '手柄', '更新', '年度版', '豪华版', '终极版'}
+
 async def search_game(game_name: str):
     # 检查缓存
-    data = await get_cache_from_db(game_name, "search")
+    data = await get_cache(game_name, "search")
     if data:
         print(f"[XianYu Search] Cache hit for: {game_name}")
-        # data 是 [text_result, games] 列表，解包
         return data[0], data[1]
+    
+    # 提前准备小写游戏名用于过滤
+    game_name_lower = game_name.lower()
             
     async with SEARCH_SEMAPHORE:
         url = f"https://www.xianyudanji.to/?cat=1&s={game_name}&order=views"
         print(f"[XianYu Search] Requesting: {url}")
-        # 咸鱼单机不使用代理，带上 Cookie
         headers = {"Cookie": XYDJ_COOKIE} if XYDJ_COOKIE else None
         html = await FAST_HTTP.get_text(url, proxy="", headers=headers, timeout=12)
         if not html:
@@ -207,18 +341,26 @@ async def search_game(game_name: str):
         print(f"[XianYu Search] HTML length: {len(html)}")
         
         soup = BeautifulSoup(html, "html.parser")
-        games, seen = [], set()
+        games = []
+        seen = set()
         articles = soup.select("article.post-grid a[href][title]")
         print(f"[XianYu Search] Found {len(articles)} articles")
         
+        # 提前过滤，减少循环内判断
         for a in articles:
-            title = a['title'].strip()
-            img_tag = a.select_one("img")
-            img_src = img_tag['src'] if img_tag else ""
-            if not title or title in seen or game_name not in title:
+            title = a.get('title', '').strip()
+            if not title or title in seen:
+                continue
+            # 快速过滤：标题必须包含搜索词
+            if game_name_lower not in title.lower():
                 continue
             seen.add(title)
-            games.append({"title": title, "url": a['href'], "img": img_src})
+            img_src = a.select_one("img")
+            games.append({
+                "title": title, 
+                "url": a['href'], 
+                "img": img_src['src'] if img_src else ""
+            })
         
         print(f"[XianYu Search] Filtered games: {len(games)}")
         if not games:
@@ -350,21 +492,31 @@ async def extract_download_info(game_url: str):
             else:
                 results.append("百度网盘提取码: 未找到")
             
-            # 提取下载链接
-            found_any_link = False
+            # 提取下载链接（并行获取重定向）
+            link_tasks = []
+            link_names = []
             for a in box.select("a[target='_blank'][href*='goto?down=']"):
                 name = a.get_text(strip=True)
                 if '解压密码' in name:
                     continue
                 jump_url = urljoin(game_url, a['href'])
-                
-                # 解析重定向
-                real_url = await FAST_HTTP.get_redirect_url(jump_url, headers=headers, timeout=10)
-                if not real_url:
-                    real_url = jump_url
-                
-                results.append(f"{name}: {real_url}")
-                found_any_link = True
+                # 创建任务并行获取
+                link_tasks.append(FAST_HTTP.get_redirect_url(jump_url, headers=headers, timeout=10))
+                link_names.append(name)
+            
+            # 并行执行所有重定向请求
+            found_any_link = False
+            if link_tasks:
+                redirect_results = await asyncio.gather(*link_tasks, return_exceptions=True)
+                for name, real_url in zip(link_names, redirect_results):
+                    if isinstance(real_url, Exception):
+                        print(f"[XianYu Detail] 获取链接失败 {name}: {real_url}")
+                        continue
+                    if not real_url:
+                        # 如果获取失败，使用原始URL
+                        real_url = f"[跳转失败] {name}"
+                    results.append(f"{name}: {real_url}")
+                    found_any_link = True
 
             if not found_any_link:
                 results.append("\n未获取到任何网盘链接，可能是 Cookie 已到期，请联系管理员更新。")
@@ -391,9 +543,6 @@ async def extract_download_info(game_url: str):
         except Exception as e:
             print(f"[XianYu Detail] Exception: {e}")
             return [f"解析游戏信息时出错: {e}"]
-
-
-# -------------------- 网络请求配置和错误处理 ----------
 
 
 # -------------------- ByrutGame 搜索（异步+代理+SSL 关闭） ----------
@@ -590,7 +739,7 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
 
     # 1. 赞助节点
     sponsor_msgs = [{"type": "text", "data": {"text": 赞助内容[0]}}]
-    qq_img_base64 = image_to_base64(QQ_IMG)
+    qq_img_base64 = get_image_base64_cached(QQ_IMG)
     if qq_img_base64:
         sponsor_msgs.append({"type": "image", "data": {"file": qq_img_base64}})
     
@@ -625,7 +774,7 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
                     if len(parts) > 1:
                         image_path = parts[1].strip()
                         if os.path.exists(image_path):
-                            img_base64 = image_to_base64(image_path)
+                            img_base64 = get_image_base64_cached(image_path)
                             if img_base64:
                                 联机_msgs.append({"type": "image", "data": {"file": img_base64}})
                                 continue  # 成功添加图片后跳过添加文本
@@ -676,14 +825,14 @@ class Xydj(BasePlugin):
         # 初始化数据库缓存表
         init_cache_db()
 
-    async def countdown(self, msg, group_id):
+    async def countdown(self, event, group_id):
         await asyncio.sleep(20)
         session = self.sessions.get(group_id)
         if session and not session.processing:
             self._cleanup(group_id)
-            await self.api.post_group_msg(
+            await self.api.qq.post_group_msg(
                 group_id=group_id,
-                rtf=MessageChain([Reply(msg.message_id), Text("等待超时，操作已取消。请重新搜索")])
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text="等待超时，操作已取消。请重新搜索")])
             )
 
     def _cleanup(self, group_id):
@@ -693,7 +842,7 @@ class Xydj(BasePlugin):
                 session.task.cancel()
             del self.sessions[group_id]
 
-    async def process_game_resource(self, game, msg):
+    async def process_game_resource(self, game, event):
         """统一处理游戏资源获取和发送的函数（并行处理单机版和联机版资源）"""
         print(f"[Resource] Processing: {game['title']}")
         try:
@@ -727,16 +876,24 @@ class Xydj(BasePlugin):
                 # Byrut 联机版（用英文关键词搜，展示用完整标题）
                 byrut_results = await search_byrut(english_keyword)   # 搜索仍走英文
                 
-                # 并行获取详情
+                # 并行获取详情（带超时控制）
                 if byrut_results:
                     print(f"[Byrut] Found {len(byrut_results)} items, fetching details in parallel...")
                     tasks = []
                     for item in byrut_results:
                         print(f"[Byrut] 找到联机资源: {item['href']}")
-                        tasks.append(fetch_byrut_detail(item))
+                        # 为每个详情请求添加超时保护
+                        tasks.append(asyncio.wait_for(fetch_byrut_detail(item), timeout=30))
                     
-                    # 并发执行所有详情页请求
-                    await asyncio.gather(*tasks)
+                    # 并发执行所有详情页请求，使用 return_exceptions 防止一个失败影响其他
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    
+                    # 处理异常结果
+                    for idx, result in enumerate(results):
+                        if isinstance(result, Exception):
+                            print(f"[Byrut] 获取详情 {idx+1} 失败: {result}")
+                            # 为失败的项目应用备用方案
+                            _apply_backup_solution(byrut_results[idx], f"获取超时或异常: {result}")
                 
                 # 联机版内容（英文展示名 + 更新时间 + 种子）
                 联机内容 = []
@@ -788,61 +945,57 @@ class Xydj(BasePlugin):
                 联机内容 = ["【联机版】获取资源时出错"]
             
             # 4. 一次性转发
-            赞助内容 = ["帮我微信登录一下，退出即可，谢谢谢谢谢！"]
+            赞助内容 = ["💡 提示：资源来自网络，仅供学习交流，收集资源不易，有帮助的话可以赞助一下！非常感谢！"]
             
             # 如果两条都空，再提示「部分未找到」
             if not 单机内容 and not 联机内容:
                 print(f"[Resource] Both empty, sending warning")
-                await self.api.post_group_msg(
-                    group_id=msg.group_id,
-                    rtf=MessageChain([Reply(msg.message_id), Text("【联机版】未找到任何资源，可能关键词不匹配或服务器异常")])
+                await self.api.qq.post_group_msg(
+                    group_id=event.group_id,
+                    rtf=MessageArray([Reply(id=event.message_id), PlainText(text="【联机版】未找到任何资源，可能关键词不匹配或服务器异常")])
                 )
                 return
             
             # 否则「有多少发多少」
             print(f"[Resource] Sending final forward message")
-            await send_final_forward(msg.group_id, 赞助内容, 单机内容, 联机内容, str(msg.user_id), msg.sender.nickname)
+            await send_final_forward(event.group_id, 赞助内容, 单机内容, 联机内容, str(event.user_id), event.sender.nickname)
         except Exception as e:
             print(f"[Resource] Processing exception: {e}")
-            await self.api.post_group_msg(
-                group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"处理失败: {str(e)}")])
+            await self.api.qq.post_group_msg(
+                group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"处理失败: {str(e)}")])
             )
 
-    async def process_single_game(self, game, msg):
-        """处理单个游戏的自动转发"""
-        await self.process_game_resource(game, msg)
-
-    @bot.group_event
-    async def on_group_message(self, msg: GroupMessage):
+    @registrar.on_group_message()
+    async def on_group_message(self, event: GroupMessageEvent):
         # 获取当前群组的会话
-        session = self.sessions.get(msg.group_id)
+        session = self.sessions.get(event.group_id)
         
         # 检查是否是等待回复的状态，并且发送者是命令发起人
-        if session and msg.user_id == session.user_id:
+        if session and event.user_id == session.user_id:
             if session.processing:
                 return
             
-            choice = re.sub(r'\[CQ:[^\]]+\]', '', msg.raw_message).strip()
+            choice = re.sub(r'\[CQ:[^\]]+\]', '', event.raw_message).strip()
             
             # 取消操作
             if choice == "0":
-                await self.api.post_group_msg(
-                    group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text("操作已取消。")])
+                await self.api.qq.post_group_msg(
+                    group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text="操作已取消。")])
                 )
-                self._cleanup(msg.group_id)
+                self._cleanup(event.group_id)
                 return
             
             # 验证选择
             if not choice.isdigit() or not 1 <= int(choice) <= len(session.games):
-                await self.api.post_group_msg(
-                    group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text("回复错误，操作已取消。请重新搜索游戏。")])
+                await self.api.qq.post_group_msg(
+                    group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text="回复错误，操作已取消。请重新搜索游戏。")])
                 )
-                self._cleanup(msg.group_id)
+                self._cleanup(event.group_id)
                 return
             
             choice = int(choice)
-            await self.api.post_group_msg(
-                group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"已选择第 {choice} 个游戏,我帮你找游戏，你帮我点一下：\n#小程序://工具铺/AN8wdJKGPenxRri\n点击登录退出即可,谢谢谢谢谢~")])
+            await self.api.qq.post_group_msg(
+                group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"已选择第 {choice} 个游戏,我帮你找游戏，你帮我点一下：\n#小程序://工具铺/AN8wdJKGPenxRri\n点击登录退出即可,谢谢谢谢谢~")])
             )
             
             session.processing = True
@@ -853,53 +1006,53 @@ class Xydj(BasePlugin):
             
             try:
                 game = session.games[choice - 1]
-                await self.process_game_resource(game, msg)
+                await self.process_game_resource(game, event)
             except Exception as e:
-                await self.api.post_group_msg(
-                    group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"处理失败: {str(e)}")])
+                await self.api.qq.post_group_msg(
+                    group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"处理失败: {str(e)}")])
                 )
             finally:
-                self._cleanup(msg.group_id)
+                self._cleanup(event.group_id)
         
         # 处理新的搜索命令
-        elif msg.raw_message.strip().startswith("搜索"):
-            game_name = msg.raw_message.strip()[2:].strip()
+        elif event.raw_message.strip().startswith("搜索"):
+            game_name = event.raw_message.strip()[2:].strip()
             if not game_name:
-                await self.api.post_group_msg(
-                    group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text("使用方法：搜索+游戏名称，例如：搜索 文明6")])
+                await self.api.qq.post_group_msg(
+                    group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text="使用方法：搜索+游戏名称，例如：搜索 文明6")])
                 )
                 return
             
             try:
                 text_result, games = await search_game(game_name)
                 if not text_result:
-                    await self.api.post_group_msg(
-                        group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text("未找到，检查游戏名字，搜索游戏字数少一点试试呢")])
+                    await self.api.qq.post_group_msg(
+                        group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text="未找到，检查游戏名字，搜索游戏字数少一点试试呢")])
                     )
                     return
                 
                 # 如果只有一个游戏结果，直接自动处理
                 if len(games) == 1:
-                    await self.api.post_group_msg(
-                        group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text("我帮你找游戏，你帮我点一下：#小程序://工具铺/AN8wdJKGPenxRri  点击登录退出即可,谢谢谢谢谢~")])
+                    await self.api.qq.post_group_msg(
+                        group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text="我帮你找游戏，你帮我点一下：#小程序://工具铺/AN8wdJKGPenxRri  点击登录退出即可,谢谢谢谢谢~")])
                     )
-                    await self.process_single_game(games[0], msg)
+                    await self.process_game_resource(games[0], event)
                     return
                 
                 # 多个游戏结果，创建新会话
-                await self.api.post_group_msg(
-                    group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text(f"🎯 发现 {len(games)} 款游戏\n{text_result}\n⏰ 20秒内回复序号选择 | 回复 0 取消操作")])
+                await self.api.qq.post_group_msg(
+                    group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"🎯 发现 {len(games)} 款游戏\n{text_result}\n⏰ 20秒内回复序号选择 | 回复 0 取消操作")])
                 )
                 
                 # 创建会话并保存
-                session = SearchSession(msg.user_id, games)
-                session.task = asyncio.create_task(self.countdown(msg, msg.group_id))
-                self.sessions[msg.group_id] = session
+                session = SearchSession(event.user_id, games)
+                session.task = asyncio.create_task(self.countdown(event, event.group_id))
+                self.sessions[event.group_id] = session
                 
             except Exception as e:
                 logging.exception(f"搜索出错: {e}")
-                await self.api.post_group_msg(
-                    group_id=msg.group_id, rtf=MessageChain([Reply(msg.message_id), Text("发生错误，请稍后重试。")])
+                await self.api.qq.post_group_msg(
+                    group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text="发生错误，请稍后重试。")])
                 )
 
     async def on_load(self):

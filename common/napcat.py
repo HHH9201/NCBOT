@@ -150,17 +150,16 @@ class NapCatService:
             # 使用直接发送
             if bot_api:
                 try:
-                    from ncatbot.core.message import MessageChain
-                    from ncatbot.core.event.message_segment.message_segment import Text, Reply
+                    from ncatbot.types import MessageArray, PlainText, Reply
                     
                     chain_list = []
                     if reply_message_id:
-                        chain_list.append(Reply(reply_message_id))
-                    chain_list.append(Text(content))
+                        chain_list.append(Reply(id=reply_message_id))
+                    chain_list.append(PlainText(text=content))
                     
                     await bot_api.post_group_msg(
                         group_id=int(group_id),
-                        rtf=MessageChain(chain_list)
+                        rtf=MessageArray(chain_list)
                     )
                     return True
                 except Exception as e:
