@@ -4,6 +4,13 @@ import logging
 from typing import List, Dict, Optional, Union, AsyncGenerator
 from .config import GLOBAL_CONFIG
 
+# 尝试导入 OpenAI 客户端用于 ModelScope
+try:
+    from openai import AsyncOpenAI
+    HAS_OPENAI = True
+except ImportError:
+    HAS_OPENAI = False
+
 class AIService:
     """
     通用 AI 服务封装 (支持 SiliconFlow 和 ModelScope API)
@@ -21,7 +28,7 @@ class AIService:
         self.default_proxy = GLOBAL_CONFIG.get("proxy")
         
         # ModelScope 配置
-        self.modelscope_url = "https://api-inference.modelscope.cn/v1/chat/completions"
+        self.modelscope_url = "https://api-inference.modelscope.cn/v1"
         self.modelscope_key = GLOBAL_CONFIG.get("modelscope.api_key", "ms-71cf0ad0-ca1a-4da5-9832-7b187bdec0a8")
         self.modelscope_model = GLOBAL_CONFIG.get("modelscope.model", "ZhipuAI/GLM-4.7-Flash")
 
@@ -110,8 +117,53 @@ class AIService:
         :param api_key: API密钥
         :return: 回复内容
         """
+        actual_key = api_key or self.modelscope_key
+        actual_model = model or self.modelscope_model
+        
+        # 使用 OpenAI 客户端 (如果可用)
+        if HAS_OPENAI:
+            try:
+                client = AsyncOpenAI(
+                    base_url=self.modelscope_url,
+                    api_key=actual_key
+                )
+
+                response = await client.chat.completions.create(
+                    model=actual_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=False
+                )
+
+                if response.choices and len(response.choices) > 0:
+                    return response.choices[0].message.content.strip()
+                return None
+
+            except Exception as e:
+                logging.error(f"[ModelScope] OpenAI客户端调用失败: {e}，尝试回退到 aiohttp 方式")
+                # 回退到 aiohttp 方式
+                return await self._modelscope_chat_aiohttp(
+                    messages, actual_model, temperature, max_tokens, stream, proxy, actual_key
+                )
+        else:
+            # 回退到 aiohttp 方式
+            logging.warning("[ModelScope] OpenAI 库未安装，使用 aiohttp 方式")
+            return await self._modelscope_chat_aiohttp(
+                messages, actual_model, temperature, max_tokens, stream, proxy, actual_key
+            )
+    
+    async def _modelscope_chat_aiohttp(self, 
+                                       messages: List[Dict[str, str]], 
+                                       model: str,
+                                       temperature: float = 0.7,
+                                       max_tokens: int = 512,
+                                       stream: bool = False,
+                                       proxy: Optional[str] = None,
+                                       api_key: Optional[str] = None) -> Optional[str]:
+        """使用 aiohttp 调用 ModelScope API"""
         payload = {
-            "model": model or self.modelscope_model,
+            "model": model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -119,17 +171,22 @@ class AIService:
         }
         
         headers = {
-            "Authorization": f"Bearer {api_key or self.modelscope_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
         
         actual_proxy = proxy or self.default_proxy
 
         try:
+            url = f"{self.modelscope_url}/chat/completions"
+            logging.info(f"[ModelScope] 请求URL: {url}")
+            logging.info(f"[ModelScope] 请求模型: {model}")
+            logging.info(f"[ModelScope] 请求消息: {messages}")
+            logging.info(f"[ModelScope] API Key前10位: {api_key[:10]}...")
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    self.modelscope_url, 
-                    json=payload, 
+                    url,
+                    json=payload,
                     headers=headers,
                     proxy=actual_proxy,
                     timeout=30
@@ -158,12 +215,22 @@ class AIService:
                     else:
                         # 非流式输出
                         data = await resp.json()
-                        if "choices" in data and len(data["choices"]) > 0:
+                        logging.info(f"[ModelScope] API响应: {data}")
+                        if "choices" in data and data["choices"] and len(data["choices"]) > 0:
                             return data["choices"][0]["message"]["content"].strip()
+                        # 如果 choices 为空，检查是否有错误信息
+                        if "error" in data:
+                            logging.error(f"[ModelScope] API返回错误: {data['error']}")
+                        elif "message" in data:
+                            logging.error(f"[ModelScope] API返回消息: {data['message']}")
+                        else:
+                            logging.warning(f"[ModelScope] API响应中没有 choices 字段，响应内容: {data}")
                         return None
-                    
+
         except Exception as e:
             logging.error(f"[ModelScope] API调用异常: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
             return None
 
     async def modelscope_simple_chat(self, 

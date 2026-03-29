@@ -1,0 +1,6 @@
+name = "resource_collector"
+version = "1.0.0"
+main = "main.py"
+
+description = "静默收集群里的网盘资源链接"
+author = "Bot"

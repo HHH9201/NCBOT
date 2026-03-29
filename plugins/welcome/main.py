@@ -17,6 +17,8 @@ from ncatbot.event.qq import NoticeEvent
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+from common.db_permissions import db_permission_manager
+
 # 北京时间时区
 CN_TZ = timezone(timedelta(hours=8))
 
@@ -130,8 +132,41 @@ class Welcome(BasePlugin):
         if not notice_type or not user_id:
             return
 
-        # ---- 加群 ----
+        # 获取机器人自身的 QQ 号
+        self_id = getattr(event, 'self_id', None)
+
+        # ---- 机器人被邀请入群 ----
+        if notice_type == "group_increase" and str(user_id) == str(self_id):
+            # 机器人加入新群，自动添加到权限数据库
+            logger.info(f"🤖 机器人加入新群: {group_id}")
+            try:
+                # 检查是否已在数据库中
+                existing = await db_permission_manager.get_group_config(str(group_id))
+                if not existing.get('plugins'):
+                    # 新群，添加默认配置（全部允许）
+                    await db_permission_manager.set_all_plugins(str(group_id), True)
+                    logger.info(f"✅ 已自动添加群 {group_id} 到权限数据库")
+
+                    # 发送入群通知
+                    await self.api.post_group_msg(
+                        group_id=group_id,
+                        text="🎉 大家好！我是机器人，已成功加入本群。\n"
+                               "发送 帮助 查看可用功能。\n"
+                               "管理员可通过私聊管理本群权限。"
+                    )
+                else:
+                    logger.info(f"📋 群 {group_id} 已存在于权限数据库")
+            except Exception as e:
+                logger.error(f"❌ 自动添加群 {group_id} 失败: {e}")
+            return
+
+        # 检查插件是否启用（会自动添加新群到数据库）
+        if not await db_permission_manager.is_plugin_enabled(group_id, "welcome"):
+            return
+
+        # ---- 成员加群 ----
         if notice_type == "group_increase":
+
             rec = self.leave_records.setdefault(
                 user_id, {"count": 0, "last_leave": None, "history": []}
             )
@@ -144,13 +179,14 @@ class Welcome(BasePlugin):
                 welcome_msg += f"\n(欢迎回家！上次离开：{_fmt_time(rec['last_leave'])})"
 
             # 发送欢迎消息
-            await self.api.qq.post_group_msg(
+            await self.api.post_group_msg(
                 group_id=group_id,
-                message=f"[CQ:at,qq={user_id}] {welcome_msg}"
+                text=f"[CQ:at,qq={user_id}] {welcome_msg}"
             )
 
         # ---- 退群 ----
         elif notice_type == "group_decrease":
+
             rec = self.leave_records.setdefault(
                 user_id, {"count": 0, "last_leave": None, "history": []}
             )
@@ -163,9 +199,9 @@ class Welcome(BasePlugin):
 
             # 使用配置的模板发送告别消息
             text = self.goodbye_template.format(user_id=user_id, count=rec['count'])
-            await self.api.qq.post_group_msg(
+            await self.api.post_group_msg(
                 group_id=group_id,
-                message=text
+                text=text
             )
 
     async def on_load(self):

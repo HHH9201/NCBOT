@@ -15,6 +15,8 @@ from ncatbot.types import Reply
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+from common.db_permissions import db_permission_manager
+
 
 class txt(BasePlugin):
     """文档查询插件 - 关键词查询文档内容"""
@@ -106,6 +108,10 @@ class txt(BasePlugin):
     async def on_group_message(self, event: GroupMessageEvent):
         """收到群消息即扫描关键词"""
         try:
+            # 检查插件是否启用（会自动添加新群到数据库）
+            if not await db_permission_manager.is_plugin_enabled(event.group_id, "txt"):
+                return
+            
             text = event.raw_message.strip()
             if not text:
                 return

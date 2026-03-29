@@ -1,0 +1,77 @@
+# 群聊功能权限配置
+# 支持按群号配置每个插件/功能的开关
+
+# 默认配置（对所有群生效，除非被特定群配置覆盖）
+default:
+  # 插件开关
+  plugins:
+    ai_chat: true        # AI 对话插件 - @机器人自动回复
+    xydj: true           # 游戏搜索插件 - 搜索游戏资源
+    welcome: true        # 欢迎插件 - 成员加群欢迎、退群告别
+    txt: true            # 文档查询插件 - 关键词查询文档
+    help: true           # 帮助插件 - 显示帮助信息
+    epic: true           # Epic 喜加一插件 - 获取 Epic 免费游戏
+
+  # 功能级别的细粒度控制（在插件开启时生效）
+  features:
+    ai_chat:
+      at_reply: true     # @机器人回复
+      private_chat: true # 私聊功能
+    xydj:
+      search: true       # 搜索游戏
+      single_player: true # 单机版资源
+      multi_player: true  # 联机版资源
+    welcome:
+      group_increase: true # 加群欢迎
+      group_decrease: true # 退群告别
+    txt:
+      keyword_reply: true  # 关键词自动回复
+      default_reply: true  # 默认回复提示
+    epic:
+      free_games: true     # 查询免费游戏
+
+# 特定群配置（优先级高于 default）
+# 格式: "群号": {配置}
+groups:
+  # 示例：测试群（695934967）- 开启所有功能
+  "695934967":
+    plugins:
+      ai_chat: true
+      xydj: true
+      welcome: true
+      txt: true
+      help: true
+      epic: true
+    features:
+      ai_chat:
+        at_reply: true
+        private_chat: true
+
+  # 示例：游戏群 - 关闭 AI 对话，保留游戏搜索
+  # "123456789":
+  #   plugins:
+  #     ai_chat: false
+  #     xydj: true
+  #     welcome: true
+  #     txt: true
+  #     help: true
+  #     epic: true
+
+  # 示例：禁言群 - 只保留帮助和文档查询
+  # "987654321":
+  #   plugins:
+  #     ai_chat: false
+  #     xydj: false
+  #     welcome: false
+  #     txt: true
+  #     help: true
+  #     epic: false
+
+# 黑名单群（完全禁用机器人）
+blacklist: []
+  # - "111111111"
+  # - "222222222"
+
+# 白名单群（只有这些群可以使用，如果为空则对所有群生效）
+whitelist: []
+  # - "695934967"

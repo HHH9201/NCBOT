@@ -33,3 +33,8 @@ plugin:
 root: '123456'
 skip_ncatbot_install_check: false
 websocket_timeout: 15
+
+# ModelScope AI 配置 (免费)
+modelscope:
+  api_key: "ms-71cf0ad0-ca1a-4da5-9832-7b187bdec0a8"
+  model: "ZhipuAI/GLM-4.7-Flash"
