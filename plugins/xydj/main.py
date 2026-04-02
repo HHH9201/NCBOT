@@ -1,8 +1,7 @@
 # /home/hjh/BOT/NCBOT/plugins/xydj/main.py
 # -*- coding: utf-8 -*-
 """
-咸鱼单机（单机版）+ ByrutGame（联机版）
-双匿名合并转发卡片
+咸鱼单机（单机版）
 """
 import re
 import os
@@ -10,15 +9,14 @@ import time
 import json
 import asyncio
 import logging
-import yaml
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-from ncatbot.plugin import BasePlugin
-from ncatbot.core import registrar
+from ncatbot.plugin import NcatBotPlugin
 from ncatbot.event.qq import GroupMessageEvent
 from ncatbot.types import PlainText, At, Reply, MessageArray, Image
+from ncatbot.core.registry import registrar
 
 # 引入全局服务和配置
 from common import (
@@ -27,6 +25,7 @@ from common import (
     load_yaml, save_yaml, clean_filename,
     DEFAULT_HEADERS, db_manager, AsyncHttpClient
 )
+from common.db_permissions import db_permission_manager
 
 # 配置更清爽的日志格式，去掉进程和线程信息
 logging.basicConfig(
@@ -34,28 +33,15 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# -------------------- 提取配置 --------------------
-# 加载插件本地配置
-PLUGIN_DIR = Path(__file__).parent
-CONFIG_FILE = PLUGIN_DIR / "tool" / "config.yaml"
-LOCAL_CONFIG = load_yaml(CONFIG_FILE) if CONFIG_FILE.exists() else {}
+# Cookie 缓存
+_XYDJ_COOKIE = None
 
-BYRUT_BASE = LOCAL_CONFIG.get('byrut_base') or GLOBAL_CONFIG.get('byrut_base') or "https://napcat.1783069903.workers.dev"
-
-# 构建 Cookie (优先使用本地配置)
-cookies_dict = LOCAL_CONFIG.get('cookies', {})
-if cookies_dict:
-    XYDJ_COOKIE = "; ".join([f"{k}={v}" for k, v in cookies_dict.items()])
-else:
-    XYDJ_COOKIE = GLOBAL_CONFIG.get('xydj_cookie', '')
-
-# 代理配置 (优先使用本地，否则使用全局)
-PROXY = LOCAL_CONFIG.get('proxy') or GLOBAL_CONFIG.get('proxy')
-
-# 图片路径处理
-TOOL_DIR = Path(__file__).parent / "tool"
-QQ_IMG = str(TOOL_DIR / LOCAL_CONFIG.get('images', {}).get('qq_img', "xcx.jpg"))
-BACKUP_IMG = str(TOOL_DIR / LOCAL_CONFIG.get('images', {}).get('backup_img', "种子.png"))
+async def get_xydj_cookie() -> str:
+    """从数据库获取 xydj cookie"""
+    global _XYDJ_COOKIE
+    if _XYDJ_COOKIE is None:
+        _XYDJ_COOKIE = await db_permission_manager.get_cookie("xydj")
+    return _XYDJ_COOKIE
 
 # 图片Base64缓存
 _image_base64_cache: Dict[str, str] = {}
@@ -70,8 +56,8 @@ def get_image_base64_cached(image_path: str) -> Optional[str]:
         _image_base64_cache[image_path] = result
     return result
 
-# 快速HTTP客户端：禁用重试，缩短默认超时
-FAST_HTTP = AsyncHttpClient(retry_count=1, retry_delay=0.0, timeout=15)
+# 快速HTTP客户端：增加重试和超时时间
+FAST_HTTP = AsyncHttpClient(retry_count=3, retry_delay=1.0, timeout=30)
 
 CACHE_FILE = Path(__file__).parent / "tool" / "cache" / "game_name_cache.yaml"
 _title_cache = load_yaml(CACHE_FILE)
@@ -140,7 +126,7 @@ def init_cache_db():
     global _db_initialized
     if _db_initialized:
         return
-    
+
     try:
         # 检查表是否存在
         check_sql = "SELECT name FROM sqlite_master WHERE type='table' AND name='xydj_cache'"
@@ -148,7 +134,7 @@ def init_cache_db():
         if result:
             _db_initialized = True
             return
-        
+
         # 创建表
         sql = """
         CREATE TABLE IF NOT EXISTS xydj_cache (
@@ -163,6 +149,136 @@ def init_cache_db():
         print("[DB] 缓存表初始化完成")
     except Exception as e:
         logging.error(f"[DB] 初始化缓存表失败: {e}")
+
+
+async def search_game_in_db(keyword: str) -> list:
+    """从数据库搜索游戏（使用 TursoPermissionManager，自动处理云端/本地）"""
+    games = []
+
+    try:
+        # 使用 TursoPermissionManager 搜索（自动处理云端/本地）
+        cloud_games = await db_permission_manager.search_game_resources(keyword)
+        if cloud_games:
+            for game_data in cloud_games:
+                # 解析各个网盘的链接和提取码
+                pan_types = []
+                pan_codes = []
+                download_links = []
+
+                # 检查百度网盘（必须有真实链接才显示）
+                if game_data.get("baidu_url"):
+                    pan_types.append("百度")
+                    if game_data.get("baidu_code"):
+                        pan_codes.append(game_data["baidu_code"])
+                    download_links.append(f"百度网盘: {game_data['baidu_url']}")
+
+                # 检查夸克网盘（必须有真实链接才显示）
+                if game_data.get("quark_url"):
+                    pan_types.append("夸克")
+                    if game_data.get("quark_code"):
+                        pan_codes.append(game_data["quark_code"])
+                    download_links.append(f"夸克网盘: {game_data['quark_url']}")
+
+                # 检查UC网盘（必须有真实链接才显示）
+                if game_data.get("uc_url"):
+                    pan_types.append("UC")
+                    if game_data.get("uc_code"):
+                        pan_codes.append(game_data["uc_code"])
+                    download_links.append(f"UC网盘: {game_data['uc_url']}")
+
+                # 跳过没有有效网盘链接的游戏
+                if not download_links:
+                    continue
+
+                game = {
+                    "title": game_data.get("name", ""),
+                    "url": "",
+                    "img": "",
+                    "pan_count": len(pan_types),
+                    "pan_types": pan_types,
+                    "pan_codes": pan_codes,
+                    "decompress_password": game_data.get("password", ""),
+                    "download_links": download_links,
+                    "updated_at": game_data.get("updated_at", ""),
+                    "from_db": True
+                }
+                games.append(game)
+            print(f"[DB] 从数据库找到 {len(games)} 条记录，关键词: {keyword}")
+    except Exception as e:
+        logging.error(f"[DB] 从数据库搜索游戏失败: {e}")
+
+    return games
+
+
+async def save_game_to_db(keyword: str, game: dict, detail_info: list = None, web_updated_at: str = ""):
+    """保存游戏信息到数据库（使用 TursoPermissionManager，自动处理云端/本地）"""
+    try:
+        # 解析详情信息
+        decompress_password = ""
+        # 存储每个网盘的信息：{网盘名称: {"url": "链接", "code": "提取码"}}
+        pan_links = {}
+
+        if detail_info:
+            for line in detail_info:
+                # 提取解压密码
+                if "解压密码" in line and "【" in line:
+                    match = re.search(r'【([^】]+)】', line)
+                    if match:
+                        decompress_password = match.group(1)
+
+                # 提取网盘名称和提取码（格式：百度网盘提取码: 【xxx】）
+                pan_code_match = re.search(r'(百度网盘|夸克网盘|UC网盘)提取码[:：]\s*【([^】]+)】', line)
+                if pan_code_match:
+                    pan_name = pan_code_match.group(1)
+                    pan_code = pan_code_match.group(2)
+                    if pan_name not in pan_links:
+                        pan_links[pan_name] = {}
+                    pan_links[pan_name]["code"] = pan_code
+
+                # 提取网盘链接（格式：百度网盘: http://...）
+                pan_url_match = re.search(r'(百度网盘|夸克网盘|UC网盘)[:：]\s*(https?://\S+)', line)
+                if pan_url_match:
+                    pan_name = pan_url_match.group(1)
+                    pan_url = pan_url_match.group(2)
+                    if pan_name not in pan_links:
+                        pan_links[pan_name] = {}
+                    pan_links[pan_name]["url"] = pan_url
+
+        # 构建保存的数据（新字段名，不带 xydj_ 前缀）
+        save_data = {
+            "password": decompress_password,
+        }
+
+        # 添加网页更新时间
+        if web_updated_at:
+            save_data["web_updated_at"] = web_updated_at
+
+        # 为每个网盘添加独立的字段
+        # 网盘名称映射为英文字段名
+        pan_name_mapping = {
+            "百度网盘": "baidu",
+            "夸克网盘": "quark",
+            "UC网盘": "uc",
+        }
+
+        for pan_name, pan_info in pan_links.items():
+            field_prefix = pan_name_mapping.get(pan_name, pan_name)
+            # 存储网盘链接
+            if pan_info.get("url"):
+                save_data[f"{field_prefix}_url"] = pan_info["url"]
+            # 存储提取码
+            if pan_info.get("code"):
+                save_data[f"{field_prefix}_code"] = pan_info["code"]
+
+        # 使用 TursoPermissionManager 保存（自动处理云端/本地）
+        await db_permission_manager.save_game_resource(
+            name=game.get("title", ""),
+            data=save_data
+        )
+        print(f"[DB] 保存游戏到数据库: {game.get('title', '')}, 字段: {list(save_data.keys())}")
+
+    except Exception as e:
+        logging.error(f"[DB] 保存游戏到数据库失败: {e}")
 
 async def get_cache(key: str, cache_type: str):
     """获取缓存（先查内存，再查数据库）"""
@@ -321,31 +437,73 @@ def extract_english_name(title: str) -> tuple[str, str]:
 GAME_FILTER_KEYWORDS = {'v', '版', 'dlc', '中文', '手柄', '更新', '年度版', '豪华版', '终极版'}
 
 async def search_game(game_name: str):
-    # 检查缓存
+    # 1. 先检查内存缓存
     data = await get_cache(game_name, "search")
     if data:
-        print(f"[XianYu Search] Cache hit for: {game_name}")
+        print(f"[XianYu Search] Memory cache hit for: {game_name}")
         return data[0], data[1]
-    
+
+    # 2. 查询数据库
+    db_games = await search_game_in_db(game_name)
+    if db_games:
+        print(f"[XianYu Search] Database hit for: {game_name}")
+        # 构建文本结果
+        text_lines = []
+        for idx, g in enumerate(db_games):
+            title_parts = g['title'].split('|')
+            game_name_extracted = title_parts[0].strip()
+
+            key_info = []
+            for part in title_parts[1:]:
+                part = part.strip()
+                if any(keyword in part.lower() for keyword in ['v', '版', 'dlc', '中文', '手柄', '更新', '年度版']):
+                    key_info.append(part)
+
+            display_text = f"{idx+1}. {game_name_extracted}"
+            if key_info:
+                display_text += f" | {' | '.join(key_info[:3])}"
+
+            # 添加网盘数量信息
+            if g.get('pan_count', 0) > 0:
+                display_text += f" [网盘:{g['pan_count']}个]"
+
+            text_lines.append(display_text)
+
+        text_result = "\n".join(text_lines)
+
+        # 存入内存缓存
+        await set_cache(game_name, [text_result, db_games], "search")
+
+        return text_result, db_games
+
+    # 3. 数据库没有，去网站搜索
+    print(f"[XianYu Search] Database miss, fetching from website: {game_name}")
+
     # 提前准备小写游戏名用于过滤
     game_name_lower = game_name.lower()
-            
+
     async with SEARCH_SEMAPHORE:
         url = f"https://www.xianyudanji.to/?cat=1&s={game_name}&order=views"
         print(f"[XianYu Search] Requesting: {url}")
-        headers = {"Cookie": XYDJ_COOKIE} if XYDJ_COOKIE else None
-        html = await FAST_HTTP.get_text(url, proxy="", headers=headers, timeout=12)
+        cookie = await get_xydj_cookie()
+        headers = {"Cookie": cookie} if cookie else None
+        html = await FAST_HTTP.get_text(url, headers=headers, timeout=12)
         if not html:
             print(f"[XianYu Search] No HTML returned")
             return None, None
         print(f"[XianYu Search] HTML length: {len(html)}")
-        
+
+        # 检查是否遇到安全验证
+        if "安全验证" in html or "guardok" in html:
+            print(f"[XianYu Search] 遇到安全验证，cookie可能已失效")
+            return "❌ 遇到网站安全验证，请联系管理员更新cookie", None
+
         soup = BeautifulSoup(html, "html.parser")
         games = []
         seen = set()
         articles = soup.select("article.post-grid a[href][title]")
         print(f"[XianYu Search] Found {len(articles)} articles")
-        
+
         # 提前过滤，减少循环内判断
         for a in articles:
             title = a.get('title', '').strip()
@@ -357,393 +515,336 @@ async def search_game(game_name: str):
             seen.add(title)
             img_src = a.select_one("img")
             games.append({
-                "title": title, 
-                "url": a['href'], 
+                "title": title,
+                "url": a['href'],
                 "img": img_src['src'] if img_src else ""
             })
-        
+
         print(f"[XianYu Search] Filtered games: {len(games)}")
         if not games:
             # 即使没找到也缓存空结果，防止重复无效查询
             await set_cache_to_db(game_name, [None, None], "search")
             return None, None
-        
+
         # 直接返回文本格式的游戏列表，不生成图片
         text_lines = []
-        
+
         for idx, g in enumerate(games):
             # 提取游戏名和版本信息
             title_parts = g['title'].split('|')
             game_name_extracted = title_parts[0].strip()
-            
+
             # 提取关键信息，保持简洁
             key_info = []
             for part in title_parts[1:]:
                 part = part.strip()
                 if any(keyword in part.lower() for keyword in ['v', '版', 'dlc', '中文', '手柄', '更新', '年度版']):
                     key_info.append(part)
-            
+
             # 构建美观的格式
             display_text = f"{idx+1}. {game_name_extracted}"
             if key_info:
                 display_text += f" | {' | '.join(key_info[:3])}"
-            
+
             text_lines.append(display_text)
-        
+
         text_result = "\n".join(text_lines)
-        
-        # 存入缓存
-        await set_cache_to_db(game_name, [text_result, games], "search")
-        
+
+        # 存入内存缓存
+        await set_cache(game_name, [text_result, games], "search")
+
+        # 保存到数据库（先保存基本信息，详情在获取后更新）
+        for game in games:
+            await save_game_to_db(game_name, game, None)
+
+        return text_result, games
+
+
+async def search_game_force_update(game_name: str):
+    """强制从网站搜索游戏（跳过所有缓存，用于/更新命令）"""
+    # 强制从网站搜索（跳过内存缓存和数据库查询）
+    print(f"[Force Update] Fetching from website (skip all cache): {game_name}")
+
+    # 提前准备小写游戏名用于过滤
+    game_name_lower = game_name.lower()
+
+    async with SEARCH_SEMAPHORE:
+        url = f"https://www.xianyudanji.to/?cat=1&s={game_name}&order=views"
+        print(f"[Force Update] Requesting: {url}")
+        cookie = await get_xydj_cookie()
+        headers = {"Cookie": cookie} if cookie else None
+        html = await FAST_HTTP.get_text(url, headers=headers, timeout=12)
+        if not html:
+            print(f"[Force Update] No HTML returned")
+            return None, None
+        print(f"[Force Update] HTML length: {len(html)}")
+
+        # 检查是否遇到安全验证
+        if "安全验证" in html or "guardok" in html:
+            print(f"[Force Update] 遇到安全验证，cookie可能已失效")
+            return "❌ 遇到网站安全验证，请联系管理员更新cookie", None
+
+        soup = BeautifulSoup(html, "html.parser")
+        games = []
+        seen = set()
+        articles = soup.select("article.post-grid a[href][title]")
+        print(f"[Force Update] Found {len(articles)} articles")
+
+        # 提前过滤，减少循环内判断
+        for a in articles:
+            title = a.get('title', '').strip()
+            if not title or title in seen:
+                continue
+            # 快速过滤：标题必须包含搜索词
+            if game_name_lower not in title.lower():
+                continue
+            seen.add(title)
+            img_src = a.select_one("img")
+            games.append({
+                "title": title,
+                "url": a['href'],
+                "img": img_src['src'] if img_src else ""
+            })
+
+        print(f"[Force Update] Filtered games: {len(games)}")
+        if not games:
+            return None, None
+
+        # 直接返回文本格式的游戏列表，不生成图片
+        text_lines = []
+
+        for idx, g in enumerate(games):
+            # 提取游戏名和版本信息
+            title_parts = g['title'].split('|')
+            game_name_extracted = title_parts[0].strip()
+
+            # 提取关键信息，保持简洁
+            key_info = []
+            for part in title_parts[1:]:
+                part = part.strip()
+                if any(keyword in part.lower() for keyword in ['v', '版', 'dlc', '中文', '手柄', '更新', '年度版']):
+                    key_info.append(part)
+
+            # 构建美观的格式
+            display_text = f"{idx+1}. {game_name_extracted}"
+            if key_info:
+                display_text += f" | {' | '.join(key_info[:3])}"
+
+            text_lines.append(display_text)
+
+        text_result = "\n".join(text_lines)
+
+        # 存入内存缓存
+        await set_cache(game_name, [text_result, games], "search")
+
+        # 不在这里保存到数据库，等用户选择后再保存（在process_game_resource中）
+
         return text_result, games
 
 # -------------------- xydj 详情 --------------------
-async def extract_download_info(game_url: str):
-    # 检查缓存
-    data = await get_cache_from_db(game_url, "detail")
-    if data:
-        # 如果缓存中的解压密码看起来像是误抓的提取码（4位），则忽略缓存重新抓取
-        is_bad_cache = False
-        for line in data:
-            if "解压密码" in line:
-                m = re.search(r'【([a-zA-Z0-9]{4})】', line)
-                if m:
-                    is_bad_cache = True
-                    break
-        if not is_bad_cache:
-            print(f"[XianYu Detail] Cache hit for: {game_url}")
-            return data
-        else:
-            print(f"[XianYu Detail] Bad cache detected for {game_url}, re-fetching...")
+async def extract_download_info(game_url: str, skip_cache: bool = False):
+    """
+    从游戏详情页提取下载信息
+    返回格式：(["解压密码: 【xxx】", "百度网盘提取码: 【xxx】", ...], "2025年08月04日")
+    返回一个元组：(详情列表, 网页更新时间)
+    
+    Args:
+        game_url: 游戏详情页URL
+        skip_cache: 是否跳过缓存（强制更新模式使用）
+    """
+    # 检查缓存（缓存现在存储元组）
+    if not skip_cache:
+        cached_data = await get_cache_from_db(game_url, "detail")
+        if cached_data and isinstance(cached_data, (list, tuple)) and len(cached_data) == 2:
+            results, web_updated_at = cached_data
+            # 如果缓存中的解压密码看起来像是误抓的提取码（4位），则忽略缓存重新抓取
+            is_bad_cache = False
+            for line in results:
+                if "解压密码" in line:
+                    m = re.search(r'【([a-zA-Z0-9]{4})】', line)
+                    if m:
+                        is_bad_cache = True
+                        break
+            if not is_bad_cache:
+                print(f"[XianYu Detail] Cache hit for: {game_url}")
+                return results, web_updated_at
+            else:
+                print(f"[XianYu Detail] Bad cache detected for {game_url}, re-fetching...")
+    else:
+        print(f"[XianYu Detail] Skip cache (force update mode): {game_url}")
 
     async with SEARCH_SEMAPHORE:
         print(f"[XianYu Detail] Processing: {game_url}")
         try:
-            # 咸鱼单机详情页也不使用代理，带上 Cookie
-            headers = {"Cookie": XYDJ_COOKIE} if XYDJ_COOKIE else None
-            html = await FAST_HTTP.get_text(game_url, proxy="", headers=headers, timeout=20)
+            # 带上 Cookie 请求详情页
+            cookie = await get_xydj_cookie()
+            headers = {"Cookie": cookie} if cookie else None
+            html = await FAST_HTTP.get_text(game_url, headers=headers, timeout=20)
             if not html:
                 print(f"[XianYu Detail] No HTML returned")
-                return ["无法获取页面内容"]
+                return ["无法获取页面内容"], ""
             
             soup = BeautifulSoup(html, "html.parser")
+            
+            # 检查是否遇到安全验证
+            if "安全验证" in html or "guardok" in html:
+                print(f"[XianYu Detail] 遇到安全验证，cookie可能已失效")
+                return ["❌ 遇到网站安全验证，请联系管理员更新cookie"], ""
+            
             box = soup.select_one("#ripro_v2_shop_down-5")
             if not box:
                 print(f"[XianYu Detail] Download box not found")
-                return ["未找到下载区域"]
+                return ["未找到下载区域"], ""
             
             print(f"[XianYu Detail] Download box found")
             
-            # --- 提取逻辑重构 ---
-            password_val = "未找到"
-            pan_codes = [] # 改为列表，支持多个网盘提取码
+            results = []
+            password_val = None
+            pan_cards = []
+            web_updated_at = ""  # 网页更新时间
             
-            # 1. 遍历所有 btn-group 分组（处理网盘提取码和部分解压密码）
-            groups = box.select(".btn-group")
-            for group in groups:
-                a_tag = group.select_one("a[href*='goto?down=']")
+            # ========== 1. 提取最近更新时间 ==========
+            down_info = box.select_one(".down-info")
+            if down_info:
+                for li in down_info.select("li"):
+                    label = li.select_one(".data-label")
+                    if label and "最近更新" in label.get_text(strip=True):
+                        info = li.select_one(".info")
+                        if info:
+                            web_updated_at = info.get_text(strip=True)
+                            print(f"[XianYu Detail] 网页更新时间: {web_updated_at}")
+                            break
+            
+            # ========== 2. 提取解压密码（优先检查两种方式）==========
+            
+            # 方式一：检查 pan-download-card 中是否有"解压密码"卡片
+            for card in box.select(".pan-download-card"):
+                a_tag = card.select_one("a.pan-download-link")
                 if not a_tag:
                     continue
                 
-                label = a_tag.get_text(strip=True)
-                btn = group.select_one("button[data-clipboard-text]")
-                val = (btn.get("data-clipboard-text") or "").strip() if btn else ""
-                
-                if '解压密码' in label and val:
-                    # 只有长度 > 4 的才认为是真正的解压密码
-                    if len(val) > 4:
-                        password_val = val
-                elif any(k in label for k in ['百度', '天翼', '阿里', '迅雷', '夸克']) and val:
-                    # 只有 4 位的才认为是提取码
-                    if re.fullmatch(r'[A-Za-z0-9]{4}', val):
-                        pan_codes.append(f"{label}提取码: 【{val}】")
+                name_span = a_tag.select_one("span.pan-name")
+                if name_span:
+                    pan_name = name_span.get_text(strip=True)
+                    # 如果网盘名称是"解压密码"，则提取其中的密码
+                    if pan_name == "解压密码":
+                        pwd_span = card.select_one("span.pan-pwd")
+                        if pwd_span:
+                            # 从 data-clipboard-text 获取
+                            pwd_code = pwd_span.get("data-clipboard-text", "").strip()
+                            if pwd_code:
+                                password_val = pwd_code
+                                print(f"[XianYu Detail] 从解压密码卡片获取: {password_val}")
+                                break
             
-            # 2. 从 .down-info 区域提取（处理你提供的这种新情况）
-            if password_val == "未找到":
-                info_list = box.select(".down-info li")
-                for li in info_list:
-                    label_el = li.select_one(".data-label")
-                    info_el = li.select_one(".info")
-                    if label_el and info_el:
-                        label_text = label_el.get_text(strip=True)
-                        info_text = info_el.get_text(strip=True)
-                        if '解压密码' in label_text and info_text:
-                            # 过滤掉“自动复制”之类的提示语，取核心词
-                            if "点击" not in info_text and "复制" not in info_text:
-                                password_val = info_text
+            # 方式二：检查 down-info 区域
+            if not password_val and down_info:
+                # 查找包含"解压密码"的 li 元素
+                for li in down_info.select("li"):
+                    label = li.select_one(".data-label")
+                    if label and "解压密码" in label.get_text(strip=True):
+                        info = li.select_one(".info")
+                        if info:
+                            # 提取文本内容
+                            pwd_text = info.get_text(strip=True)
+                            # 尝试提取纯数字密码（如 437368）
+                            if re.fullmatch(r'\d+', pwd_text):
+                                password_val = pwd_text
+                                print(f"[XianYu Detail] 从down-info获取数字密码: {password_val}")
                             else:
-                                # 如果有提示语，尝试提取加粗部分或特定词
-                                b_tag = info_el.select_one("b")
+                                # 尝试从 b/span 标签中提取
+                                b_tag = info.select_one("b")
                                 if b_tag:
-                                    password_val = b_tag.get_text(strip=True)
-
-            # 3. 兜底：如果还没找到，尝试全局正则（排除干扰）
-            if password_val == "未找到":
-                box_text = box.get_text(separator="\n", strip=True)
-                # 匹配：解压密码：xxx，要求至少5位
-                m = re.search(r'解压密码[:：]\s*([^\s\u4e00-\u9fa5]{4,})', box_text)
-                if m: password_val = m.group(1).strip()
+                                    pwd_text = b_tag.get_text(strip=True)
+                                    if re.fullmatch(r'\d+', pwd_text):
+                                        password_val = pwd_text
+                                        print(f"[XianYu Detail] 从down-info b标签获取: {password_val}")
+                            break
             
-            results = [f"解压密码: 【{password_val}】"]
-            
-            # 添加网盘提取码
-            if pan_codes:
-                results.extend(pan_codes)
-            else:
-                results.append("百度网盘提取码: 未找到")
-            
-            # 提取下载链接（并行获取重定向）
-            link_tasks = []
-            link_names = []
-            for a in box.select("a[target='_blank'][href*='goto?down=']"):
-                name = a.get_text(strip=True)
-                if '解压密码' in name:
+            # ========== 3. 提取网盘信息（排除解压密码卡片）==========
+            for card in box.select(".pan-download-card"):
+                a_tag = card.select_one("a.pan-download-link")
+                if not a_tag:
                     continue
-                jump_url = urljoin(game_url, a['href'])
-                # 创建任务并行获取
-                link_tasks.append(FAST_HTTP.get_redirect_url(jump_url, headers=headers, timeout=10))
-                link_names.append(name)
+                    
+                pan_name = ""
+                pan_link = a_tag.get('href', '').strip()
+                
+                # 从链接文本判断网盘类型
+                name_span = a_tag.select_one("span.pan-name")
+                if name_span:
+                    pan_name = name_span.get_text(strip=True)
+                
+                # 跳过"解压密码"卡片，这不是网盘
+                if pan_name == "解压密码":
+                    continue
+                
+                # 获取提取码 - 从 data-clipboard-text 属性
+                pwd_span = card.select_one("span.pan-pwd")
+                pwd_code = ""
+                if pwd_span:
+                    # 优先从 data-clipboard-text 获取
+                    pwd_code = pwd_span.get("data-clipboard-text", "").strip()
+                    # 如果属性没有，尝试从文本中提取 "密码：xxx"
+                    if not pwd_code:
+                        pwd_text = pwd_span.get_text(strip=True)
+                        pwd_match = re.search(r'密码[：:]\s*([a-zA-Z0-9]+)', pwd_text)
+                        if pwd_match:
+                            pwd_code = pwd_match.group(1)
+                
+                # 只保留真正的网盘链接（百度、夸克、UC）
+                if pan_link and pan_name and any(keyword in pan_name for keyword in ['百度', '夸克', 'UC']):
+                    pan_cards.append({
+                        "name": pan_name,
+                        "link": pan_link,
+                        "code": pwd_code
+                    })
             
-            # 并行执行所有重定向请求
-            found_any_link = False
-            if link_tasks:
-                redirect_results = await asyncio.gather(*link_tasks, return_exceptions=True)
-                for name, real_url in zip(link_names, redirect_results):
-                    if isinstance(real_url, Exception):
-                        print(f"[XianYu Detail] 获取链接失败 {name}: {real_url}")
-                        continue
-                    if not real_url:
-                        # 如果获取失败，使用原始URL
-                        real_url = f"[跳转失败] {name}"
-                    results.append(f"{name}: {real_url}")
-                    found_any_link = True
-
-            if not found_any_link:
-                results.append("\n未获取到任何网盘链接，可能是 Cookie 已到期，请联系管理员更新。")
-
+            # ========== 4. 构建结果 ==========
+            # 添加解压密码（如果找到）
+            if password_val:
+                results.append(f"解压密码: 【{password_val}】")
+            # 如果没找到解压密码，不添加任何提示（按用户要求，禁止把提取码写在解压密码上）
             
-            print(f"[XianYu Detail] Results: {results}")
-            
-            # 只有当提取到有效信息时才缓存（避免缓存"未找到"的无效结果）
-            # 检查结果中是否包含有效的密码信息
-            has_valid_info = False
-            for line in results:
-                if "密码" in line and "未找到" not in line:
-                    has_valid_info = True
-                    break
-            
-            # 如果包含有效信息，或者已经重试过多次，则写入缓存
-            # 这里策略是：只要不是全"未找到"，就缓存。如果全是"未找到"，则不缓存（以便下次重试）
-            if has_valid_info:
-                await set_cache_to_db(game_url, results, "detail")
+            # 添加网盘信息
+            if pan_cards:
+                for card in pan_cards:
+                    # 添加提取码
+                    if card.get("code"):
+                        results.append(f"{card['name']}提取码: 【{card['code']}】")
+                    
+                    # 添加网盘链接（需要获取真实链接）
+                    if card.get("link"):
+                        # 获取重定向后的真实链接
+                        try:
+                            real_url = await FAST_HTTP.get_redirect_url(card["link"], headers=headers, timeout=10)
+                            if real_url:
+                                results.append(f"{card['name']}: {real_url}")
+                            else:
+                                results.append(f"{card['name']}: {card['link']}")
+                        except Exception as e:
+                            print(f"[XianYu Detail] 获取链接失败: {e}")
+                            results.append(f"{card['name']}: {card['link']}")
             else:
-                print(f"[XianYu Detail] No valid info found for {game_url}, skipping cache.")
+                results.append("网盘链接: 未找到")
             
-            return results
+            print(f"[XianYu Detail] Results: {results}, 更新时间: {web_updated_at}")
+
+            # 5. 缓存结果（现在缓存元组）
+            has_valid_info = any("【" in line and "未找到" not in line for line in results)
+            if has_valid_info:
+                await set_cache_to_db(game_url, [results, web_updated_at], "detail")
+
+            return results, web_updated_at
+            
         except Exception as e:
             print(f"[XianYu Detail] Exception: {e}")
-            return [f"解析游戏信息时出错: {e}"]
+            return [f"解析游戏信息时出错: {e}"], ""
 
 
-# -------------------- ByrutGame 搜索（异步+代理+SSL 关闭） ----------
-async def search_byrut(name: str) -> list:
-    """返回 [{href, title, category}, ...] 最多3条"""
-    if not name:
-        return []
-
-    # 检查缓存
-    data = await get_cache_from_db(name, "byrut_search")
-    if data:
-        print(f"[Byrut Search] Cache hit for: {name}")
-        return data
-
-    async with SEARCH_SEMAPHORE:
-        url = f"{BYRUT_BASE}/index.php?do=search"
-        print(f"[Byrut Search] Requesting: {url} with name={name}")
-        params = {
-            "subaction": "search",
-            "story": name
-        }
-        
-        try:
-            html = await FAST_HTTP.get_text(url, params=params, verify_ssl=False, timeout=12, proxy=PROXY)
-            if not html:
-                print(f"[Byrut Search] No HTML returned")
-                # 缓存空结果
-                await set_cache_to_db(name, [], "byrut_search")
-                return []
-            
-            print(f"[Byrut Search] HTML length: {len(html)}")
-
-            soup = BeautifulSoup(html, "html.parser")
-            key = normalize_text(name)
-            results, seen = [], set()
-            
-            articles = soup.select("a.search_res")
-            print(f"[Byrut Search] Found {len(articles)} articles")
-            
-            for a in articles:
-                href = a["href"]
-                if "po-seti" not in href.lower():   # ← 只留联机
-                    continue
-                title_tag = a.select_one(".search_res_title")
-                if not title_tag:
-                    continue
-                title = title_tag.get_text(strip=True)
-                if key not in normalize_text(title):
-                    continue
-                if href in seen:
-                    continue
-                seen.add(href)
-                category = (
-                    "联机版"
-                    if any(k in href.lower() for k in ["po-seti", "onlayn", "multiplayer"])
-                    else "单机版"
-                )
-                results.append({"href": href, "title": title, "category": category})
-            
-            print(f"[Byrut Search] Filtered results: {len(results)}")
-            final_results = results[:3]
-            
-            # 存入缓存
-            await set_cache_to_db(name, final_results, "byrut_search")
-            
-            return final_results
-
-        except Exception as e:
-            logging.error(f"[Byrut] 搜索异常: {e}")
-            print(f"[Byrut Search] Exception: {e}")
-            return []
-
-
-# -------------------- 备用方案函数 --------------------
-def _apply_backup_solution(item: dict, error_type: str) -> None:
-    """应用备用方案，当主API不可用时提供基本功能"""
-    logging.info(f"[Byrut] {error_type}，应用备用方案")
-    print(f"[Byrut Backup] Applying backup solution due to: {error_type}")
-    
-    # 使用原始链接作为备用下载链接
-    backup_torrent_url = item.get('href', '')
-    
-    # 替换域名
-    if "napcat.1783069903.workers.dev" in backup_torrent_url:
-        backup_torrent_url = backup_torrent_url.replace("https://napcat.1783069903.workers.dev", "https://byrutgame.org")
-    
-    # 检查备用图片是否存在
-    backup_image = str(TOOL_DIR / "种子.png")
-    if not os.path.exists(backup_image):
-        # 如果文件不存在，使用文字标识
-        backup_image = None
-        logging.warning(f"[Byrut] 备用图片文件不存在: {backup_image}")
-    
-    # 更新项目信息
-    item.update({
-        "update_time": f"API连接失败，使用备用资源 ({error_type})", 
-        "torrent_url": backup_torrent_url,
-        "backup_image": backup_image,
-        "backup_mode": True  # 标记为备用模式
-    })
-
-# -------------------- ByrutGame 详情（异步+代理+SSL 关闭） ----------
-async def fetch_byrut_detail(item: dict) -> None:
-    href = item["href"]
-    
-    # 检查缓存
-    data = await get_cache_from_db(href, "byrut_detail")
-    if data:
-        print(f"[Byrut Detail] Cache hit for: {href}")
-        update_time, torrent_url = data
-        item.update({"update_time": update_time, "torrent_url": torrent_url})
-        return
-
-    async with SEARCH_SEMAPHORE:
-        print(f"[Byrut Detail] Processing: {href}")
-        # 检查是否已经是正确的链接
-        if href.startswith("https://byrutgame.org"):
-            proxy_url = href
-        else:
-            detail_path = href.replace("https://napcat.1783069903.workers.dev", "")
-            if not detail_path.startswith("/"):
-                detail_path = "/" + detail_path
-            proxy_url = f"https://byrutgame.org{detail_path}"
-        
-        print(f"[Byrut Detail] Proxy URL: {proxy_url}")
-        
-        try:
-            # 使用 http_client 获取内容，自动处理重试和 User-Agent 轮换
-            # 传递 verify_ssl=False 以避免 SSL 错误
-            html = await FAST_HTTP.get_text(proxy_url, verify_ssl=False, timeout=15, proxy=PROXY)
-            
-            if not html:
-                print(f"[Byrut Detail] No HTML returned")
-                _apply_backup_solution(item, "无法获取页面内容")
-                return
-
-        except Exception as e:
-            logging.error(f"[Byrut] 详情页请求异常: {e}")
-            print(f"[Byrut Detail] Exception: {e}")
-            _apply_backup_solution(item, f"请求异常: {e}")
-            return
-
-        soup = BeautifulSoup(html, "html.parser")
-        update_node = soup.select_one("div.tupd")
-        update_text = update_node.get_text(strip=True) if update_node else ""
-        m = re.search(r"(\d{1,2}\s+[а-яА-Я]+\s+\d{4},\s*\d{1,2}:\d{2})", update_text)
-        
-        if m:
-            russian_date = m.group(1)
-            # 俄文月份映射
-            month_map = {
-                'января': '1', 'февраля': '2', 'марта': '3', 'апреля': '4',
-                'мая': '5', 'июня': '6', 'июля': '7', 'августа': '8',
-                'сентября': '9', 'октября': '10', 'ноября': '11', 'декабря': '12'
-            }
-            
-            # 解析俄文日期
-            parts = russian_date.split()
-            if len(parts) >= 3:
-                day = parts[0]
-                month_ru = parts[1].lower()
-                year = parts[2].replace(',', '')
-                
-                # 转换为中文格式
-                if month_ru in month_map:
-                    month = month_map[month_ru]
-                    # 提取时间部分
-                    time_match = re.search(r'(\d{1,2}:\d{2})', russian_date)
-                    time_str = time_match.group(1) if time_match else ""
-                    
-                    # 格式化为中文日期格式
-                    update_time = f"{year}-{month}-{day} {time_str}".strip()
-                else:
-                    update_time = russian_date  # 如果转换失败，保持原样
-            else:
-                update_time = russian_date
-        else:
-            update_time = "未知"
-
-        tor_tag = soup.select_one("a.itemtop_games") or soup.select_one("a:-soup-contains('Скачать торрент')")
-        torrent_url = tor_tag["href"] if tor_tag else None
-        if torrent_url and torrent_url.startswith("/"):
-            torrent_url = f"https://byrutgame.org{torrent_url}"
-
-        item.update({"update_time": update_time, "torrent_url": torrent_url})
-        
-        # 存入缓存
-        await set_cache_to_db(href, (update_time, torrent_url), "byrut_detail")
-
-
-async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: list[str], 联机_lines: list[str], user_id: str = "0", user_nickname: str = "游戏助手"):
-    """一次性构造：赞助 + 单机版 + 联机版（节点内不再写游戏名）"""
+async def send_final_forward(group_id, 单机_lines: list[str], user_id: str = "0", user_nickname: str = "游戏助手"):
+    """一次性构造：单机版资源"""
     nodes = []
-
-    # 1. 赞助节点
-    sponsor_msgs = [{"type": "text", "data": {"text": 赞助内容[0]}}]
-    qq_img_base64 = get_image_base64_cached(QQ_IMG)
-    if qq_img_base64:
-        sponsor_msgs.append({"type": "image", "data": {"file": qq_img_base64}})
-    
-    nodes.append(napcat_service.construct_node(user_id, user_nickname, sponsor_msgs))
 
     # 提取游戏名
     game_title = ""
@@ -752,50 +853,16 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
             game_title = line.split("游戏名字：")[1].strip()
             break
     if not game_title:
-        for line in 联机_lines:
-            if "游戏名字：" in line:
-                game_title = line.split("游戏名字：")[1].strip()
-                break
-    if not game_title:
         game_title = "游戏资源"
 
-    # 2. 单机版节点
+    # 单机版节点
     单机_msgs = [{"type": "text", "data": {"text": line}} for line in 单机_lines]
     nodes.append(napcat_service.construct_node(user_id, user_nickname, 单机_msgs))
 
-    # 3. 联机版节点
-    if 联机_lines:
-        联机_msgs = []
-        for line in 联机_lines:
-            # 检查是否是备用图片行
-            if "备用图片：" in line:
-                try:
-                    parts = line.split("备用图片：")
-                    if len(parts) > 1:
-                        image_path = parts[1].strip()
-                        if os.path.exists(image_path):
-                            img_base64 = get_image_base64_cached(image_path)
-                            if img_base64:
-                                联机_msgs.append({"type": "image", "data": {"file": img_base64}})
-                                continue  # 成功添加图片后跳过添加文本
-                except Exception as e:
-                    print(f"图片处理异常: {e}")
-            
-            # 默认作为文本添加
-            联机_msgs.append({"type": "text", "data": {"text": line}})
-                    
-        nodes.append(napcat_service.construct_node(user_id, user_nickname, 联机_msgs))
-
-    # 计算资源数量
-    single_count = len([line for line in 单机_lines if "链接" in line])
-    multi_count = len([line for line in 联机_lines if "种子链接" in line])
-    total_count = single_count + multi_count
+    # 计算资源数量（统计包含 http 的网盘链接行）
+    single_count = len([line for line in 单机_lines if "http" in line])
     
-    summary = f"共找到 {total_count} 个资源链接"
-    if single_count > 0:
-        summary += f" (单机: {single_count} 个)"
-    if multi_count > 0:
-        summary += f" (联机: {multi_count} 个)"
+    summary = f"共找到 {single_count} 个资源链接"
 
     return await napcat_service.send_group_forward_msg(
         group_id=group_id,
@@ -808,14 +875,15 @@ async def send_final_forward(group_id, 赞助内容: list[str], 单机_lines: li
 
 
 class SearchSession:
-    def __init__(self, user_id, games, task=None):
+    def __init__(self, user_id, games, task=None, force_update=False):
         self.user_id = user_id
         self.games = games
         self.task = task
         self.processing = False
+        self.force_update = force_update  # 是否强制更新模式
 
 # -------------------- 插件主类 --------------------
-class Xydj(BasePlugin):
+class Xydj(NcatBotPlugin):
     name = "xydj"
     version = "1.0"
 
@@ -830,8 +898,7 @@ class Xydj(BasePlugin):
         session = self.sessions.get(group_id)
         if session and not session.processing:
             self._cleanup(group_id)
-            await self.api.qq.post_group_msg(
-                group_id=group_id,
+            await event.reply(
                 rtf=MessageArray([Reply(id=event.message_id), PlainText(text="等待超时，操作已取消。请重新搜索")])
             )
 
@@ -842,127 +909,85 @@ class Xydj(BasePlugin):
                 session.task.cancel()
             del self.sessions[group_id]
 
-    async def process_game_resource(self, game, event):
-        """统一处理游戏资源获取和发送的函数（并行处理单机版和联机版资源）"""
-        print(f"[Resource] Processing: {game['title']}")
+    async def process_game_resource(self, game, event, force_update=False):
+        """统一处理游戏资源获取和发送的函数
+        
+        Args:
+            game: 游戏数据
+            event: 消息事件
+            force_update: 是否强制从网站更新（覆盖数据库）
+        """
+        print(f"[Resource] Processing: {game['title']}, from_db: {game.get('from_db', False)}, force_update: {force_update}")
         try:
             # 获取处理后的名字和中文展示名
             english_keyword, chinese_display = extract_english_name(game['title'])
             # 打印搜索用的英文名到控制台
             print(f"[搜索关键词] 中文名: {chinese_display}, 英文名: {english_keyword}")
 
-            # 并行处理单机版和联机版资源
-            async def process_single_player():
-                """处理单机版资源"""
-                print(f"[Single Player] Starting for: {game['url']}")
-                单机内容 = []
-                单机_lines = await extract_download_info(game['url'])
+            单机内容 = []
+            单机_lines = []
+            web_updated_at = ""
+
+            # 检查是否来自数据库且已有网盘链接数据（且不是强制更新模式）
+            if not force_update and game.get('from_db') and game.get('download_links'):
+                print(f"[Resource] 使用数据库数据，无需抓取网站")
+                # 从数据库数据构建单机_lines
+                if game.get('decompress_password'):
+                    单机_lines.append(f"解压密码: 【{game['decompress_password']}】")
+                
+                # 添加网盘信息
+                for link in game.get('download_links', []):
+                    单机_lines.append(link)
+                
+                web_updated_at = game.get('updated_at', '')
+            else:
+                # 从网站抓取详情（强制更新模式或数据库没有数据）
+                if force_update:
+                    print(f"[Resource] 强制更新模式，从网站抓取最新数据")
+                else:
+                    print(f"[Single Player] Starting for: {game['url']}")
+                
+                单机_lines, web_updated_at = await extract_download_info(game['url'], skip_cache=force_update)
+                
+                # ===== 保存到数据库（在发送给用户之前）=====
                 if 单机_lines:
-                    print(f"[Single Player] Found lines: {len(单机_lines)}")
-                    单机内容.append("【单机版】\n")
-                    单机内容.append(f"游戏名字：{chinese_display}\n")   # ← 中文展示名
-                    # 逐行加 \n 保证密码/链接后都换行
-                    for line in 单机_lines:
-                        单机内容.append(f"{line}\n")
-                else:
-                    print(f"[Single Player] No lines found")
-                    单机内容.append("【单机版】\n")
-                    单机内容.append("未找到相关资源\n")
-                return 单机内容
-
-            async def process_multi_player():
-                """处理联机版资源"""
-                print(f"[Multi Player] Starting search for: {english_keyword}")
-                # Byrut 联机版（用英文关键词搜，展示用完整标题）
-                byrut_results = await search_byrut(english_keyword)   # 搜索仍走英文
-                
-                # 并行获取详情（带超时控制）
-                if byrut_results:
-                    print(f"[Byrut] Found {len(byrut_results)} items, fetching details in parallel...")
-                    tasks = []
-                    for item in byrut_results:
-                        print(f"[Byrut] 找到联机资源: {item['href']}")
-                        # 为每个详情请求添加超时保护
-                        tasks.append(asyncio.wait_for(fetch_byrut_detail(item), timeout=30))
-                    
-                    # 并发执行所有详情页请求，使用 return_exceptions 防止一个失败影响其他
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
-                    
-                    # 处理异常结果
-                    for idx, result in enumerate(results):
-                        if isinstance(result, Exception):
-                            print(f"[Byrut] 获取详情 {idx+1} 失败: {result}")
-                            # 为失败的项目应用备用方案
-                            _apply_backup_solution(byrut_results[idx], f"获取超时或异常: {result}")
-                
-                # 联机版内容（英文展示名 + 更新时间 + 种子）
-                联机内容 = []
-                if byrut_results:
-                    print(f"[Multi Player] Found {len(byrut_results)} results")
-                    联机内容.append("【联机版】\n")
-                    联机内容.append(f"游戏名字：{english_keyword}\n")   # ← 英文展示名
-                    
-                    for idx, item in enumerate(byrut_results, 1):
-                        if len(byrut_results) > 1:
-                            联机内容.append(f"\n{idx}. 资源 {idx}\n")
-                        
-                        联机内容.append(f"解压密码：【online-fix.me】\n")
-                        联机内容.append(f"更新时间：{item['update_time']}\n")
-                        
-                        if item.get('torrent_url'):
-                            联机内容.append(f"种子链接：{item['torrent_url']}\n")
+                    try:
+                        await save_game_to_db(english_keyword, game, 单机_lines, web_updated_at)
+                        if force_update:
+                            print(f"[DB] 已强制更新游戏数据: {game['title']}, 更新时间: {web_updated_at}")
                         else:
-                            联机内容.append(f"种子链接：暂无\n")
-                        
-                        # 如果有备用图片，添加图片标记
-                        if item.get('backup_image'):
-                            联机内容.append(f"备用图片：{item['backup_image']}\n")
-                    
-                    联机内容.append("使用提示：下载种子后使用BT客户端打开即可\n")
-                else:
-                    print(f"[Multi Player] No results found")
-                    联机内容.append("【联机版】\n")
-                    联机内容.append("未找到相关资源\n")
-                    联机内容.append("通用解压密码：【online-fix.me】\n")
-                    联机内容.append("查看教程：搜索和使用联机游戏\n")
-                    联机内容.append("https://www.yuque.com/lanmeng-ijygo/ey7ah4/fe9hfep86cw7coku?singleDoc#\n")
-                return 联机内容
+                            print(f"[DB] 已保存单机版数据: {game['title']}, 更新时间: {web_updated_at}")
+                    except Exception as e:
+                        logging.error(f"[DB] 保存游戏数据失败: {e}")
 
-            # 并行执行单机版和联机版资源获取
-            单机内容, 联机内容 = await asyncio.gather(
-                process_single_player(),
-                process_multi_player(),
-                return_exceptions=True  # 捕获异常，确保一个任务失败不会影响另一个
-            )
-            
-            # 处理可能的异常
-            if isinstance(单机内容, Exception):
-                print(f"单机版资源获取失败: {单机内容}")
-                单机内容 = ["【单机版】获取资源时出错\n"]
-            
-            if isinstance(联机内容, Exception):
-                print(f"联机版资源获取失败: {联机内容}")
-                联机内容 = ["【联机版】获取资源时出错"]
-            
-            # 4. 一次性转发
-            赞助内容 = ["💡 提示：资源来自网络，仅供学习交流，收集资源不易，有帮助的话可以赞助一下！非常感谢！"]
-            
-            # 如果两条都空，再提示「部分未找到」
-            if not 单机内容 and not 联机内容:
-                print(f"[Resource] Both empty, sending warning")
-                await self.api.qq.post_group_msg(
-                    group_id=event.group_id,
-                    rtf=MessageArray([Reply(id=event.message_id), PlainText(text="【联机版】未找到任何资源，可能关键词不匹配或服务器异常")])
+            # 构建发送内容
+            if 单机_lines:
+                print(f"[Single Player] Found lines: {len(单机_lines)}, 更新时间: {web_updated_at}")
+                单机内容.append("【单机版】\n")
+                单机内容.append(f"游戏名字：{chinese_display}\n")
+                # 逐行加 \n 保证密码/链接后都换行
+                for line in 单机_lines:
+                    单机内容.append(f"{line}\n")
+            else:
+                print(f"[Single Player] No lines found")
+                单机内容.append("【单机版】\n")
+                单机内容.append("未找到相关资源\n")
+
+            # 如果为空，再提示「未找到」
+            if not 单机内容:
+                print(f"[Resource] Empty, sending warning")
+                await event.reply(
+                    rtf=MessageArray([Reply(id=event.message_id), PlainText(text="未找到任何资源，可能关键词不匹配或服务器异常")])
                 )
                 return
-            
-            # 否则「有多少发多少」
+
+            # 发送结果
             print(f"[Resource] Sending final forward message")
-            await send_final_forward(event.group_id, 赞助内容, 单机内容, 联机内容, str(event.user_id), event.sender.nickname)
+            await send_final_forward(event.group_id, 单机内容, str(event.user_id), event.sender.nickname)
         except Exception as e:
             print(f"[Resource] Processing exception: {e}")
-            await self.api.qq.post_group_msg(
-                group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"处理失败: {str(e)}")])
+            await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"处理失败: {str(e)}")])
             )
 
     @registrar.on_group_message()
@@ -979,23 +1004,23 @@ class Xydj(BasePlugin):
             
             # 取消操作
             if choice == "0":
-                await self.api.qq.post_group_msg(
-                    group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text="操作已取消。")])
+                await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text="操作已取消。")])
                 )
                 self._cleanup(event.group_id)
                 return
             
             # 验证选择
             if not choice.isdigit() or not 1 <= int(choice) <= len(session.games):
-                await self.api.qq.post_group_msg(
-                    group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text="回复错误，操作已取消。请重新搜索游戏。")])
+                await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text="回复错误，操作已取消。请重新搜索游戏。")])
                 )
                 self._cleanup(event.group_id)
                 return
             
             choice = int(choice)
-            await self.api.qq.post_group_msg(
-                group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"已选择第 {choice} 个游戏,我帮你找游戏，你帮我点一下：\n#小程序://工具铺/AN8wdJKGPenxRri\n点击登录退出即可,谢谢谢谢谢~")])
+            await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"已选择第 {choice} 个游戏,我帮你找游戏，你帮我点一下：\n#小程序://工具铺/AN8wdJKGPenxRri\n点击登录退出即可,谢谢谢谢谢~")])
             )
             
             session.processing = True
@@ -1006,10 +1031,11 @@ class Xydj(BasePlugin):
             
             try:
                 game = session.games[choice - 1]
-                await self.process_game_resource(game, event)
+                # 如果是强制更新模式，传递 force_update=True
+                await self.process_game_resource(game, event, force_update=getattr(session, 'force_update', False))
             except Exception as e:
-                await self.api.qq.post_group_msg(
-                    group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"处理失败: {str(e)}")])
+                await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"处理失败: {str(e)}")])
                 )
             finally:
                 self._cleanup(event.group_id)
@@ -1018,30 +1044,30 @@ class Xydj(BasePlugin):
         elif event.raw_message.strip().startswith("搜索"):
             game_name = event.raw_message.strip()[2:].strip()
             if not game_name:
-                await self.api.qq.post_group_msg(
-                    group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text="使用方法：搜索+游戏名称，例如：搜索 文明6")])
+                await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text="使用方法：搜索+游戏名称，例如：搜索 文明6")])
                 )
                 return
             
             try:
                 text_result, games = await search_game(game_name)
                 if not text_result:
-                    await self.api.qq.post_group_msg(
-                        group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text="未找到，检查游戏名字，搜索游戏字数少一点试试呢")])
+                    await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text="未找到，检查游戏名字，搜索游戏字数少一点试试呢")])
                     )
                     return
                 
                 # 如果只有一个游戏结果，直接自动处理
                 if len(games) == 1:
-                    await self.api.qq.post_group_msg(
-                        group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text="我帮你找游戏，你帮我点一下：#小程序://工具铺/AN8wdJKGPenxRri  点击登录退出即可,谢谢谢谢谢~")])
+                    await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text="我帮你找游戏，你帮我点一下：#小程序://工具铺/AN8wdJKGPenxRri  点击登录退出即可,谢谢谢谢谢~")])
                     )
                     await self.process_game_resource(games[0], event)
                     return
                 
                 # 多个游戏结果，创建新会话
-                await self.api.qq.post_group_msg(
-                    group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"🎯 发现 {len(games)} 款游戏\n{text_result}\n⏰ 20秒内回复序号选择 | 回复 0 取消操作")])
+                await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"🎯 发现 {len(games)} 款游戏\n{text_result}\n⏰ 20秒内回复序号选择 | 回复 0 取消操作")])
                 )
                 
                 # 创建会话并保存
@@ -1051,8 +1077,55 @@ class Xydj(BasePlugin):
                 
             except Exception as e:
                 logging.exception(f"搜索出错: {e}")
-                await self.api.qq.post_group_msg(
-                    group_id=event.group_id, rtf=MessageArray([Reply(id=event.message_id), PlainText(text="发生错误，请稍后重试。")])
+                await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text="发生错误，请稍后重试。")])
+                )
+        
+        # 处理 /更新 命令 - 强制从网站搜索并覆盖数据库
+        elif event.raw_message.strip().startswith("/更新"):
+            game_name = event.raw_message.strip()[3:].strip()
+            if not game_name:
+                await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text="使用方法：/更新+游戏名称，例如：/更新 只狼")])
+                )
+                return
+            
+            try:
+                # 强制从网站搜索，跳过数据库查询
+                await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"🔄 正在强制更新【{game_name}】的游戏数据...")])
+                )
+                
+                text_result, games = await search_game_force_update(game_name)
+                if not text_result:
+                    await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text="未找到，检查游戏名字，搜索游戏字数少一点试试呢")])
+                    )
+                    return
+                
+                # 如果只有一个游戏结果，直接自动处理（强制更新模式）
+                if len(games) == 1:
+                    await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text="我帮你找游戏，你帮我点一下：#小程序://工具铺/AN8wdJKGPenxRri  点击登录退出即可,谢谢谢谢谢~")])
+                    )
+                    await self.process_game_resource(games[0], event, force_update=True)
+                    return
+                
+                # 多个游戏结果，创建新会话（标记为强制更新模式）
+                await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"🎯 发现 {len(games)} 款游戏\n{text_result}\n⏰ 20秒内回复序号选择 | 回复 0 取消操作")])
+                )
+                
+                # 创建会话并保存，标记为强制更新模式
+                session = SearchSession(event.user_id, games)
+                session.force_update = True  # 标记强制更新
+                session.task = asyncio.create_task(self.countdown(event, event.group_id))
+                self.sessions[event.group_id] = session
+                
+            except Exception as e:
+                logging.exception(f"强制更新出错: {e}")
+                await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text="发生错误，请稍后重试。")])
                 )
 
     async def on_load(self):
