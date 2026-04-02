@@ -927,86 +927,22 @@ class Xydj(NcatBotPlugin):
                     traceback.print_exc()
                     raise req_e
 
-                if not res or not res.get("success"):
-                    print(f"[Resource] Failed to create ticket: {res}")
-                    await event.reply(rtf=MessageArray([Reply(id=event.message_id), PlainText(text="服务器生成任务凭证失败，请稍后重试")]))
-                    return
-
-                ticket_id = res.get("ticket")
-
-                # 构建微信小程序 JSON 卡片（参考用户自己的小程序格式）
-                # 格式: com.tencent.miniapp.lua, view: miniapp, meta: miniapp
-                import time
-                json_card = {
-                    "app": "com.tencent.miniapp.lua",
-                    "desc": "",
-                    "view": "miniapp",
-                    "bizsrc": "miniapp.nativeshare",
-                    "ver": "0.0.0.1",
-                    "prompt": f"[微信小程序]点击解锁【{chinese_display}】",
-                    "appID": "",
-                    "sourceName": "",
-                    "actionData": "",
-                    "actionData_A": "",
-                    "sourceUrl": "",
-                    "meta": {
-                        "miniapp": {
-                            "tag": "微信小程序",
-                            "tagIcon": "https://miniapp.gtimg.cn/public/miniwx.png",
-                            "title": f"游戏【{chinese_display}】已找到！",
-                            "source": "工具解忧铺",
-                            "sourcelogo": "https://miniapp.gtimg.cn/generated-icon/REDACTED_APPID.png",
-                            "preview": "https://pic1.imgdb.cn/item/6785d386d0e0a243d4f3e2e2.png",
-                            "jumpUrl": f"https://m.q.qq.com/a/s/{ticket_id}",
-                            "pcJumpUrl": f"miniapp://open/1036?url=https%3A%2F%2Fm.q.qq.com%2Fa%2Fs%2F{ticket_id}",
-                            "ark_reserved1": json.dumps({
-                                "mini_app_id": "REDACTED_APPID",
-                                "mini_app_type": 0,
-                                "applet_source": 2
-                            })
-                        }
-                    },
-                    "config": {
-                        "autosize": 0,
-                        "collect": 1,
-                        "ctime": int(time.time()),
-                        "forward": 1,
-                        "height": 631,
-                        "reply": 1,
-                        "round": 1,
-                        "token": ticket_id[:32],
-                        "type": "normal",
-                        "width": 526
-                    },
-                    "text": "",
-                    "extraApps": [],
-                    "sourceAd": "",
-                    "extra": ""
-                }
-
-                # 发送 JSON 卡片
-                await event.reply(
-                    rtf=MessageArray([
-                        Reply(id=event.message_id),
-                        Json(data=json.dumps(json_card))
-                    ])
+                # 直接获取资源并发送（跳过票据和小程序流程）
+                单机内容 = await self._get_resource_content(
+                    game, english_keyword, chinese_display,
+                    force_update, [], None, ""
                 )
-                
-                # 开启后台轮询，等待用户在小程序内完成广告观看
-                # 传递游戏信息，用于在后台获取资源
-                asyncio.create_task(
-                    self._wait_and_send_resource(
-                        event=event,
-                        group_id=event.group_id,
-                        ticket_id=ticket_id,
-                        game=game,
-                        english_keyword=english_keyword,
-                        chinese_display=chinese_display,
-                        user_id=str(event.user_id),
-                        user_nickname=event.sender.nickname,
-                        force_update=force_update
+
+                if 单机内容:
+                    await send_final_forward(event.group_id, 单机内容, str(event.user_id), event.sender.nickname)
+                else:
+                    await event.reply(
+                        rtf=MessageArray([Reply(id=event.message_id), PlainText(text="❌ 获取资源失败，请稍后重试。")])
                     )
-                )
+
+                # 以下代码已注释，跳过票据和小程序流程
+                # ticket_id = res.get("ticket")
+                # ... 原票据和卡片发送代码 ...
 
             except Exception as api_e:
                 print(f"[Resource] API Error: {api_e}")
