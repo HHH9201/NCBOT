@@ -16,6 +16,7 @@ from urllib.parse import urljoin
 from ncatbot.plugin import NcatBotPlugin
 from ncatbot.event.qq import GroupMessageEvent
 from ncatbot.types import PlainText, At, Reply, MessageArray, Image
+from ncatbot.types.qq import Json, ForwardConstructor, Share
 from ncatbot.core.registry import registrar
 
 # 引入全局服务和配置
@@ -61,6 +62,8 @@ FAST_HTTP = AsyncHttpClient(retry_count=3, retry_delay=1.0, timeout=30)
 
 CACHE_FILE = Path(__file__).parent / "tool" / "cache" / "game_name_cache.yaml"
 _title_cache = load_yaml(CACHE_FILE)
+
+import aiohttp
 
 # -------------------- 缓存与并发控制 --------------------
 # 缓存有效期 (1小时)
@@ -192,7 +195,7 @@ async def search_game_in_db(keyword: str) -> list:
 
                 game = {
                     "title": game_data.get("name", ""),
-                    "url": "",
+                    "url": game_data.get("source_url", ""),
                     "img": "",
                     "pan_count": len(pan_types),
                     "pan_types": pan_types,
@@ -252,6 +255,10 @@ async def save_game_to_db(keyword: str, game: dict, detail_info: list = None, we
         # 添加网页更新时间
         if web_updated_at:
             save_data["web_updated_at"] = web_updated_at
+
+        # 保存游戏详情页 URL（用于后续获取资源）
+        if game.get("url"):
+            save_data["source_url"] = game["url"]
 
         # 为每个网盘添加独立的字段
         # 网盘名称映射为英文字段名
@@ -443,40 +450,8 @@ async def search_game(game_name: str):
         print(f"[XianYu Search] Memory cache hit for: {game_name}")
         return data[0], data[1]
 
-    # 2. 查询数据库
-    db_games = await search_game_in_db(game_name)
-    if db_games:
-        print(f"[XianYu Search] Database hit for: {game_name}")
-        # 构建文本结果
-        text_lines = []
-        for idx, g in enumerate(db_games):
-            title_parts = g['title'].split('|')
-            game_name_extracted = title_parts[0].strip()
-
-            key_info = []
-            for part in title_parts[1:]:
-                part = part.strip()
-                if any(keyword in part.lower() for keyword in ['v', '版', 'dlc', '中文', '手柄', '更新', '年度版']):
-                    key_info.append(part)
-
-            display_text = f"{idx+1}. {game_name_extracted}"
-            if key_info:
-                display_text += f" | {' | '.join(key_info[:3])}"
-
-            # 添加网盘数量信息
-            if g.get('pan_count', 0) > 0:
-                display_text += f" [网盘:{g['pan_count']}个]"
-
-            text_lines.append(display_text)
-
-        text_result = "\n".join(text_lines)
-
-        # 存入内存缓存
-        await set_cache(game_name, [text_result, db_games], "search")
-
-        return text_result, db_games
-
-    # 3. 数据库没有，去网站搜索
+    # 2. 直接去网站搜索游戏列表（不先查数据库）
+    # 数据库只在用户选择游戏后查询链接
     print(f"[XianYu Search] Database miss, fetching from website: {game_name}")
 
     # 提前准备小写游戏名用于过滤
@@ -912,83 +887,255 @@ class Xydj(NcatBotPlugin):
     async def process_game_resource(self, game, event, force_update=False):
         """统一处理游戏资源获取和发送的函数
         
+        逻辑流程：
+        1. 先检查数据库是否有该游戏的链接
+        2. 创建 ticket 让用户看广告
+        3. 后台轮询：如果数据库有链接直接发，没有则去网站获取并存入数据库再发
+        
         Args:
-            game: 游戏数据
+            game: 游戏数据（来自网站搜索）
             event: 消息事件
             force_update: 是否强制从网站更新（覆盖数据库）
         """
-        print(f"[Resource] Processing: {game['title']}, from_db: {game.get('from_db', False)}, force_update: {force_update}")
+        print(f"[Resource] Processing: {game['title']}, force_update: {force_update}")
         try:
             # 获取处理后的名字和中文展示名
             english_keyword, chinese_display = extract_english_name(game['title'])
             # 打印搜索用的英文名到控制台
             print(f"[搜索关键词] 中文名: {chinese_display}, 英文名: {english_keyword}")
 
-            单机内容 = []
-            单机_lines = []
-            web_updated_at = ""
+            # ============== 创建 Ticket ==================
+            # 先创建 ticket 让用户看广告，资源在后台获取
+            api_base = "https://hhxyyq.online"
+            try:
+                # 拼接游戏标题作为资源占位
+                resource_text = f"游戏：{chinese_display}"
+                payload = {
+                    "platform": "qq_id",
+                    "platform_id": str(event.user_id),
+                    "app_id": "ncatbot_xydj",
+                    "resource_payload": resource_text
+                }
+                import traceback
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(f"{api_base}/api/task/create", json=payload, timeout=10) as response:
+                            res = await response.json()
+                            print(f"[Resource] API Response: {res}")
+                except Exception as req_e:
+                    print(f"[Resource] aiohttp Request Exception: {req_e}")
+                    traceback.print_exc()
+                    raise req_e
 
-            # 检查是否来自数据库且已有网盘链接数据（且不是强制更新模式）
-            if not force_update and game.get('from_db') and game.get('download_links'):
-                print(f"[Resource] 使用数据库数据，无需抓取网站")
-                # 从数据库数据构建单机_lines
-                if game.get('decompress_password'):
-                    单机_lines.append(f"解压密码: 【{game['decompress_password']}】")
-                
-                # 添加网盘信息
-                for link in game.get('download_links', []):
-                    单机_lines.append(link)
-                
-                web_updated_at = game.get('updated_at', '')
-            else:
-                # 从网站抓取详情（强制更新模式或数据库没有数据）
-                if force_update:
-                    print(f"[Resource] 强制更新模式，从网站抓取最新数据")
-                else:
-                    print(f"[Single Player] Starting for: {game['url']}")
-                
-                单机_lines, web_updated_at = await extract_download_info(game['url'], skip_cache=force_update)
-                
-                # ===== 保存到数据库（在发送给用户之前）=====
-                if 单机_lines:
-                    try:
-                        await save_game_to_db(english_keyword, game, 单机_lines, web_updated_at)
-                        if force_update:
-                            print(f"[DB] 已强制更新游戏数据: {game['title']}, 更新时间: {web_updated_at}")
-                        else:
-                            print(f"[DB] 已保存单机版数据: {game['title']}, 更新时间: {web_updated_at}")
-                    except Exception as e:
-                        logging.error(f"[DB] 保存游戏数据失败: {e}")
+                if not res or not res.get("success"):
+                    print(f"[Resource] Failed to create ticket: {res}")
+                    await event.reply(rtf=MessageArray([Reply(id=event.message_id), PlainText(text="服务器生成任务凭证失败，请稍后重试")]))
+                    return
 
-            # 构建发送内容
-            if 单机_lines:
-                print(f"[Single Player] Found lines: {len(单机_lines)}, 更新时间: {web_updated_at}")
-                单机内容.append("【单机版】\n")
-                单机内容.append(f"游戏名字：{chinese_display}\n")
-                # 逐行加 \n 保证密码/链接后都换行
-                for line in 单机_lines:
-                    单机内容.append(f"{line}\n")
-            else:
-                print(f"[Single Player] No lines found")
-                单机内容.append("【单机版】\n")
-                单机内容.append("未找到相关资源\n")
+                ticket_id = res.get("ticket")
 
-            # 如果为空，再提示「未找到」
-            if not 单机内容:
-                print(f"[Resource] Empty, sending warning")
+                # 构建微信小程序 JSON 卡片（参考用户自己的小程序格式）
+                # 格式: com.tencent.miniapp.lua, view: miniapp, meta: miniapp
+                import time
+                json_card = {
+                    "app": "com.tencent.miniapp.lua",
+                    "desc": "",
+                    "view": "miniapp",
+                    "bizsrc": "miniapp.nativeshare",
+                    "ver": "0.0.0.1",
+                    "prompt": f"[微信小程序]点击解锁【{chinese_display}】",
+                    "appID": "",
+                    "sourceName": "",
+                    "actionData": "",
+                    "actionData_A": "",
+                    "sourceUrl": "",
+                    "meta": {
+                        "miniapp": {
+                            "tag": "微信小程序",
+                            "tagIcon": "https://miniapp.gtimg.cn/public/miniwx.png",
+                            "title": f"游戏【{chinese_display}】已找到！",
+                            "source": "工具解忧铺",
+                            "sourcelogo": "https://miniapp.gtimg.cn/generated-icon/REDACTED_APPID.png",
+                            "preview": "https://pic1.imgdb.cn/item/6785d386d0e0a243d4f3e2e2.png",
+                            "jumpUrl": f"https://m.q.qq.com/a/s/{ticket_id}",
+                            "pcJumpUrl": f"miniapp://open/1036?url=https%3A%2F%2Fm.q.qq.com%2Fa%2Fs%2F{ticket_id}",
+                            "ark_reserved1": json.dumps({
+                                "mini_app_id": "REDACTED_APPID",
+                                "mini_app_type": 0,
+                                "applet_source": 2
+                            })
+                        }
+                    },
+                    "config": {
+                        "autosize": 0,
+                        "collect": 1,
+                        "ctime": int(time.time()),
+                        "forward": 1,
+                        "height": 631,
+                        "reply": 1,
+                        "round": 1,
+                        "token": ticket_id[:32],
+                        "type": "normal",
+                        "width": 526
+                    },
+                    "text": "",
+                    "extraApps": [],
+                    "sourceAd": "",
+                    "extra": ""
+                }
+
+                # 发送 JSON 卡片
                 await event.reply(
-                    rtf=MessageArray([Reply(id=event.message_id), PlainText(text="未找到任何资源，可能关键词不匹配或服务器异常")])
+                    rtf=MessageArray([
+                        Reply(id=event.message_id),
+                        Json(data=json.dumps(json_card))
+                    ])
                 )
+                
+                # 开启后台轮询，等待用户在小程序内完成广告观看
+                # 传递游戏信息，用于在后台获取资源
+                asyncio.create_task(
+                    self._wait_and_send_resource(
+                        event=event,
+                        group_id=event.group_id,
+                        ticket_id=ticket_id,
+                        game=game,
+                        english_keyword=english_keyword,
+                        chinese_display=chinese_display,
+                        user_id=str(event.user_id),
+                        user_nickname=event.sender.nickname,
+                        force_update=force_update
+                    )
+                )
+
+            except Exception as api_e:
+                print(f"[Resource] API Error: {api_e}")
+                await event.reply(rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"服务器通信失败: {str(api_e)}")]))
                 return
 
-            # 发送结果
-            print(f"[Resource] Sending final forward message")
-            await send_final_forward(event.group_id, 单机内容, str(event.user_id), event.sender.nickname)
         except Exception as e:
             print(f"[Resource] Processing exception: {e}")
             await event.reply(
                 rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"处理失败: {str(e)}")])
             )
+
+    async def _wait_and_send_resource(self, event, group_id, ticket_id, game, english_keyword, chinese_display, user_id, user_nickname, force_update=False):
+        """轮询查询后端 Ticket 状态，如果验证通过则获取并发送资源
+        
+        逻辑流程：
+        1. 先检查数据库是否有该游戏的链接
+        2. 如果没有，在用户看广告的同时去网站获取并存入数据库
+        3. 用户看完广告后，发送资源
+        """
+        max_retries = 30  # 最大轮询次数，比如30次（即2分钟）
+        delay = 4         # 每次轮询间隔4秒
+        
+        # 告诉用户正在等待验证
+        await event.reply(
+            rtf=MessageArray([Reply(id=event.message_id), PlainText(text="✅ 请点击上方小程序链接（或卡片），在小程序内完成任务（例如看个广告）即可获取资源哦~ 我在这等你！")])
+        )
+        
+        # 先检查数据库是否有链接（在看广告期间可以并行执行）
+        db_games = await search_game_in_db(english_keyword)
+        has_db_link = len(db_games) > 0 and db_games[0].get('download_links')
+        
+        # 如果数据库没有链接且不是强制更新模式，预先去网站获取（用户看广告时并行执行）
+        fetched_lines = None
+        web_updated_at = ""
+        if not has_db_link and not force_update:
+            print(f"[Wait Resource] 数据库无链接，预取网站数据: {chinese_display}")
+            try:
+                fetched_lines, web_updated_at = await extract_download_info(game['url'], skip_cache=False)
+                if fetched_lines:
+                    # 保存到数据库
+                    await save_game_to_db(english_keyword, game, fetched_lines, web_updated_at)
+                    print(f"[Wait Resource] 已预取并保存到数据库: {chinese_display}")
+            except Exception as e:
+                print(f"[Wait Resource] 预取数据失败: {e}")
+        
+        for i in range(max_retries):
+            await asyncio.sleep(delay)
+            try:
+                # 调用后端接口查询 ticket 状态
+                query_url = f"https://hhxyyq.online/api/user/get_result?ticket={ticket_id}"
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(query_url, timeout=5) as resp:
+                        response = await resp.json()
+                        
+                if response and response.get("success"):
+                    status = response.get("status")
+                    if status == "claimed" or status == "verified":
+                        # 验证通过，获取资源并发送
+                        单机内容 = await self._get_resource_content(
+                            game, english_keyword, chinese_display, 
+                            force_update, db_games, fetched_lines, web_updated_at
+                        )
+                        
+                        if 单机内容:
+                            await send_final_forward(group_id, 单机内容, user_id, user_nickname)
+                        else:
+                            await event.reply(
+                                rtf=MessageArray([Reply(id=event.message_id), PlainText(text="❌ 获取资源失败，请稍后重试。")])
+                            )
+                        return
+            except Exception as e:
+                import traceback
+                print(f"[Poll Ticket] 轮询出错: {e}")
+                traceback.print_exc()
+                pass
+                
+        # 轮询超时
+        await event.reply(
+            rtf=MessageArray([Reply(id=event.message_id), PlainText(text="⏳ 等待超时啦，好像你还没有完成任务，资源未发放，需要重新搜索哦。")])
+        )
+    
+    async def _get_resource_content(self, game, english_keyword, chinese_display, force_update, db_games, fetched_lines, web_updated_at):
+        """获取资源内容，优先从数据库获取，没有则从网站获取"""
+        单机_lines = []
+        
+        # 如果是强制更新模式，直接从网站获取
+        if force_update:
+            print(f"[Get Resource] 强制更新模式，从网站获取: {chinese_display}")
+            单机_lines, _ = await extract_download_info(game['url'], skip_cache=True)
+            if 单机_lines:
+                await save_game_to_db(english_keyword, game, 单机_lines, web_updated_at)
+            return self._build_resource_content(chinese_display, 单机_lines)
+        
+        # 1. 先检查数据库
+        if db_games and db_games[0].get('download_links'):
+            print(f"[Get Resource] 使用数据库数据: {chinese_display}")
+            game_data = db_games[0]
+            if game_data.get('decompress_password'):
+                单机_lines.append(f"解压密码: 【{game_data['decompress_password']}】")
+            for link in game_data.get('download_links', []):
+                单机_lines.append(link)
+            return self._build_resource_content(chinese_display, 单机_lines)
+        
+        # 2. 数据库没有，使用预取的数据
+        if fetched_lines:
+            print(f"[Get Resource] 使用预取数据: {chinese_display}")
+            return self._build_resource_content(chinese_display, fetched_lines)
+        
+        # 3. 预取也失败了，最后尝试从网站获取
+        print(f"[Get Resource] 最后尝试从网站获取: {chinese_display}")
+        单机_lines, _ = await extract_download_info(game['url'], skip_cache=False)
+        if 单机_lines:
+            await save_game_to_db(english_keyword, game, 单机_lines, web_updated_at)
+        return self._build_resource_content(chinese_display, 单机_lines)
+    
+    def _build_resource_content(self, chinese_display, 单机_lines):
+        """构建资源发送内容"""
+        if not 单机_lines:
+            return None
+
+        单机内容 = []
+        单机内容.append("【单机版】\n")
+        单机内容.append(f"游戏名字：{chinese_display}\n")
+        for line in 单机_lines:
+            单机内容.append(f"{line}\n")
+
+        return 单机内容
 
     @registrar.on_group_message()
     async def on_group_message(self, event: GroupMessageEvent):
@@ -1019,9 +1166,10 @@ class Xydj(NcatBotPlugin):
                 return
             
             choice = int(choice)
-            await event.reply(
-                rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"已选择第 {choice} 个游戏,我帮你找游戏，你帮我点一下：\n#小程序://工具铺/AN8wdJKGPenxRri\n点击登录退出即可,谢谢谢谢谢~")])
-            )
+            # 取消原来的无脑直接发送链接
+            # await event.reply(
+            #     rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"已选择第 {choice} 个游戏,我帮你找游戏，你帮我点一下：\n#小程序://工具铺/AN8wdJKGPenxRri\n点击登录退出即可,谢谢谢谢谢~")])
+            # )
             
             session.processing = True
             # 取消超时计时器
@@ -1059,9 +1207,9 @@ class Xydj(NcatBotPlugin):
                 
                 # 如果只有一个游戏结果，直接自动处理
                 if len(games) == 1:
-                    await event.reply(
-                rtf=MessageArray([Reply(id=event.message_id), PlainText(text="我帮你找游戏，你帮我点一下：#小程序://工具铺/AN8wdJKGPenxRri  点击登录退出即可,谢谢谢谢谢~")])
-                    )
+                    # await event.reply(
+                    # rtf=MessageArray([Reply(id=event.message_id), PlainText(text="我帮你找游戏，你帮我点一下：#小程序://工具铺/AN8wdJKGPenxRri  点击登录退出即可,谢谢谢谢谢~")])
+                    # )
                     await self.process_game_resource(games[0], event)
                     return
                 
@@ -1105,9 +1253,9 @@ class Xydj(NcatBotPlugin):
                 
                 # 如果只有一个游戏结果，直接自动处理（强制更新模式）
                 if len(games) == 1:
-                    await event.reply(
-                rtf=MessageArray([Reply(id=event.message_id), PlainText(text="我帮你找游戏，你帮我点一下：#小程序://工具铺/AN8wdJKGPenxRri  点击登录退出即可,谢谢谢谢谢~")])
-                    )
+                    # await event.reply(
+                    # rtf=MessageArray([Reply(id=event.message_id), PlainText(text="我帮你找游戏，你帮我点一下：#小程序://工具铺/AN8wdJKGPenxRri  点击登录退出即可,谢谢谢谢谢~")])
+                    # )
                     await self.process_game_resource(games[0], event, force_update=True)
                     return
                 
