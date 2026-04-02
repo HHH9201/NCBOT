@@ -2,7 +2,7 @@
 """
 资源收集插件
 自动提取群聊中的网盘链接并存储到数据库
-使用 group_permissions 表的 resource_collector 字段控制（0=允许, 1=拒绝）
+使用本地 YAML 权限控制
 默认拒绝，需要手动开启
 不回复任何消息
 """
@@ -12,6 +12,7 @@ from typing import Optional, Dict
 from ncatbot.plugin import BasePlugin
 from ncatbot.core import registrar
 from ncatbot.event.qq import GroupMessageEvent
+from common.permissions import permission_manager
 from common.db_permissions import db_permission_manager
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -104,10 +105,10 @@ class ResourceCollector(BasePlugin):
     @registrar.on_group_message()
     async def on_group_message(self, event: GroupMessageEvent):
         """处理群消息 - 静默收集资源"""
-        # 检查该群是否允许资源收集（使用权限系统）
-        # resource_collector: 0=允许, 1=拒绝（默认）
-        is_enabled = await db_permission_manager.is_plugin_enabled(
-            event.group_id, "resource_collector", auto_create=True
+        # 检查该群是否允许资源收集（使用本地 YAML 权限系统）
+        # resource_collector: true=允许, false=拒绝（默认）
+        is_enabled = permission_manager.is_plugin_enabled(
+            str(event.group_id), "resource_collector"
         )
         if not is_enabled:
             return

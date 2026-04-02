@@ -17,7 +17,7 @@ from ncatbot.event.qq import NoticeEvent
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-from common.db_permissions import db_permission_manager
+from common.permissions import permission_manager
 
 # 北京时间时区
 CN_TZ = timezone(timedelta(hours=8))
@@ -140,12 +140,12 @@ class Welcome(BasePlugin):
             # 机器人加入新群，自动添加到权限数据库
             logger.info(f"🤖 机器人加入新群: {group_id}")
             try:
-                # 检查是否已在数据库中
-                existing = await db_permission_manager.get_group_config(str(group_id))
-                if not existing.get('plugins'):
+                # 检查是否已在本地 YAML 配置中
+                existing = permission_manager.get_group_config(str(group_id))
+                if not existing:
                     # 新群，添加默认配置（全部允许）
-                    await db_permission_manager.set_all_plugins(str(group_id), True)
-                    logger.info(f"✅ 已自动添加群 {group_id} 到权限数据库")
+                    permission_manager.set_all_plugins(str(group_id), True)
+                    logger.info(f"✅ 已自动添加群 {group_id} 到本地权限配置")
 
                     # 发送入群通知
                     await self.api.post_group_msg(
@@ -155,13 +155,13 @@ class Welcome(BasePlugin):
                                "管理员可通过私聊管理本群权限。"
                     )
                 else:
-                    logger.info(f"📋 群 {group_id} 已存在于权限数据库")
+                    logger.info(f"📋 群 {group_id} 已存在于本地权限配置")
             except Exception as e:
                 logger.error(f"❌ 自动添加群 {group_id} 失败: {e}")
             return
 
-        # 检查插件是否启用（会自动添加新群到数据库）
-        if not await db_permission_manager.is_plugin_enabled(group_id, "welcome"):
+        # 检查插件是否启用（使用本地 YAML 权限）
+        if not permission_manager.is_plugin_enabled(str(group_id), "welcome"):
             return
 
         # ---- 成员加群 ----

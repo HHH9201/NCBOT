@@ -13,7 +13,7 @@ from ncatbot.event.qq import GroupMessageEvent
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-from common.db_permissions import db_permission_manager
+from common.permissions import permission_manager
 
 
 class Epic(BasePlugin):
@@ -97,8 +97,8 @@ class Epic(BasePlugin):
     @registrar.on_group_command("喜加一", "epic")
     async def epic_free_games(self, event: GroupMessageEvent):
         """获取 Epic 喜加一游戏"""
-        # 检查插件是否启用（会自动添加新群到数据库）
-        if not await db_permission_manager.is_plugin_enabled(event.group_id, "epic"):
+        # 检查插件是否启用（使用本地 YAML 权限）
+        if not permission_manager.is_plugin_enabled(str(event.group_id), "epic"):
             return
         
         await event.reply("🔍 正在获取 Epic 免费游戏信息...")

@@ -12,7 +12,7 @@ from typing import Dict, Optional, List
 from ncatbot.plugin import BasePlugin
 from ncatbot.core import registrar
 from ncatbot.event.qq import GroupMessageEvent, PrivateMessageEvent
-from common.db_permissions import db_permission_manager
+from common.permissions import permission_manager
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -215,8 +215,8 @@ class Steam(BasePlugin):
     @registrar.on_group_command("史低", "steam")
     async def query_lowest_price(self, event: GroupMessageEvent):
         """查询游戏史低价格"""
-        # 检查插件是否启用
-        if not await db_permission_manager.is_plugin_enabled(event.group_id, "steam"):
+        # 检查插件是否启用（使用本地 YAML 权限）
+        if not permission_manager.is_plugin_enabled(str(event.group_id), "steam"):
             return
 
         # 解析命令: 史低 <游戏名>

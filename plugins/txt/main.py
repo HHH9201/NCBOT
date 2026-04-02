@@ -15,7 +15,7 @@ from ncatbot.types import Reply
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-from common.db_permissions import db_permission_manager
+from common.permissions import permission_manager
 
 
 class txt(BasePlugin):
@@ -108,8 +108,8 @@ class txt(BasePlugin):
     async def on_group_message(self, event: GroupMessageEvent):
         """收到群消息即扫描关键词"""
         try:
-            # 检查插件是否启用（会自动添加新群到数据库）
-            if not await db_permission_manager.is_plugin_enabled(event.group_id, "txt"):
+            # 检查插件是否启用（使用本地 YAML 权限）
+            if not permission_manager.is_plugin_enabled(str(event.group_id), "txt"):
                 return
             
             text = event.raw_message.strip()
