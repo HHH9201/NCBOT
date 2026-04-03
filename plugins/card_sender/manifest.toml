@@ -1,0 +1,13 @@
+# 必填字段必须放在 TOML 顶层，不能放在任何 [section] 下
+name = "card_sender"
+version = "1.0.0"
+main = "main.py"
+entry_class = "CardSenderPlugin"
+author = "NcatBot"
+description = "微信小程序码发送插件，支持生成并发送圆形小程序码到 QQ 群"
+
+[dependencies]
+# 其他插件依赖
+
+[pip_dependencies]
+requests = ">=2.28.0"

@@ -1,6 +1,6 @@
 adapters:
 - config:
-    check_napcat_update: false
+    check_napcat_update: true
     enable_webui: false
     remote_mode: true
     report_forward_message_detail: true

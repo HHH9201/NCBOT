@@ -230,6 +230,9 @@ class TraeEmail(NcatBotPlugin):
     name = "trae-email"
     version = "1.0"
 
+    # 允许获取账号的用户白名单
+    ALLOWED_USERS = {"1783069903", "2356131127"}
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -237,8 +240,19 @@ class TraeEmail(NcatBotPlugin):
     async def on_group_message(self, event: GroupMessageEvent):
         raw_msg = event.raw_message.strip()
 
-        # 处理"给一个账号"命令
+        # 处理"给我一个账号"命令
         if raw_msg == "给一个账号":
+            # 检查用户是否在白名单中
+            user_id = str(event.user_id)
+            if user_id not in self.ALLOWED_USERS:
+                logger.warning(f"[TraeEmail] 用户 {user_id} 尝试获取账号但被拒绝（不在白名单中）")
+                await event.reply(
+                    rtf=MessageArray([
+                        PlainText(text="❌ 你没有权限获取账号")
+                    ])
+                )
+                return
+
             try:
                 # 先检查账号数量，不足时自动注册
                 unassigned_count = await email_manager.get_unassigned_count()

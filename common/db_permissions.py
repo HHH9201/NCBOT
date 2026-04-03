@@ -1,16 +1,10 @@
 # /home/hjh/BOT/NCBOT/common/db_permissions.py
 """
-基于 Turso (libSQL) 数据库的群聊权限管理模块
-表结构：group_permissions
-- group_id: 群ID
-- xydj: 游戏搜索插件 (0=允许, 1=拒绝)
-- welcome: 欢迎插件 (0=允许, 1=拒绝)
-- txt: 文档查询插件 (0=允许, 1=拒绝)
-- help: 帮助插件 (0=允许, 1=拒绝)
-- epic: Epic喜加一插件 (0=允许, 1=拒绝)
-- blacklist: 是否黑名单 (0=否, 1=是)
-- created_at: 创建时间
-- updated_at: 更新时间
+基于 Turso (libSQL) 数据库的资源管理模块
+表结构：
+- resources: 资源收集表 - 存储网盘资源链接
+- game_resources: 游戏资源表 - 存储游戏资源
+- ntqq_key: key 表 - 存储 cookie 等密钥
 """
 import os
 import json
@@ -26,12 +20,9 @@ logger = logging.getLogger(__name__)
 TURSO_URL = "https://weixin-hhh9201.aws-ap-northeast-1.turso.io"
 TURSO_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3NzUxMDYxODgsImlkIjoiMDE5ZDRjOTItYzIwMS03ZWNjLTkyNjctOGZkZjlhZmFhZDEyIiwicmlkIjoiZjQ1YTdiNGUtNzAwNC00OTQ1LTkyMDItODEwZTlkYzk3ZDcxIn0.quBZ92hjipfsOXLEl32Y0nYaeHTkFqr_vBiLL4b27on5Jg_tRP_z1KfPVWJz9p3KeousGT11dz4S1ks1kLM8AQ"
 
-# 所有插件列表
-ALL_PLUGINS = ["xydj", "welcome", "txt", "help", "epic", "steam", "chatty", "resource_collector"]
 
-
-class TursoPermissionManager:
-    """基于 Turso 数据库的权限管理器 - 使用 HTTP API"""
+class TursoResourceManager:
+    """基于 Turso 数据库的资源管理器 - 使用 HTTP API"""
 
     def __init__(self, url: str = TURSO_URL, auth_token: str = TURSO_TOKEN):
         self.url = url.rstrip('/')
@@ -51,9 +42,9 @@ class TursoPermissionManager:
             await self._execute_sql("SELECT 1")
             # 初始化表
             await self._init_tables()
-            logger.info("[DB Permission] Turso HTTP API 连接成功")
+            logger.info("[DB Resource] Turso HTTP API 连接成功")
         except Exception as e:
-            logger.error(f"[DB Permission] Turso 连接失败: {e}，切换到本地模式")
+            logger.error(f"[DB Resource] Turso 连接失败: {e}，切换到本地模式")
             self._local_mode = True
             if self._session:
                 await self._session.close()
@@ -64,25 +55,6 @@ class TursoPermissionManager:
 
     async def _init_tables(self):
         """初始化数据库表 (Turso)"""
-        # 创建权限表 - 一个表包含所有插件权限
-        await self._execute_sql("""
-            CREATE TABLE IF NOT EXISTS ntqq_group_permissions (
-                group_id TEXT PRIMARY KEY,
-                xydj INTEGER DEFAULT 0,
-                welcome INTEGER DEFAULT 0,
-                txt INTEGER DEFAULT 0,
-                help INTEGER DEFAULT 0,
-                epic INTEGER DEFAULT 0,
-                steam INTEGER DEFAULT 0,
-                chatty INTEGER DEFAULT 0,
-                resource_collector INTEGER DEFAULT 1,
-                blacklist INTEGER DEFAULT 0,
-                beizhu TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
         # 创建资源收集表 - 存储网盘资源链接
         await self._execute_sql("""
             CREATE TABLE IF NOT EXISTS resources (
@@ -131,35 +103,6 @@ class TursoPermissionManager:
         # 初始化 key 表（插入默认空记录）
         await self._init_key_table()
 
-    async def _add_missing_columns(self):
-        """添加缺失的字段到现有表"""
-        try:
-            # 获取现有字段
-            result = await self._query("PRAGMA table_info(ntqq_group_permissions)")
-            existing_columns = {row[1] for row in result} if result else set()
-
-            # 需要添加的字段
-            required_columns = {
-                "xydj": "INTEGER DEFAULT 0",
-                "welcome": "INTEGER DEFAULT 0",
-                "txt": "INTEGER DEFAULT 0",
-                "help": "INTEGER DEFAULT 0",
-                "epic": "INTEGER DEFAULT 0",
-                "steam": "INTEGER DEFAULT 0",
-                "chatty": "INTEGER DEFAULT 0",
-                "resource_collector": "INTEGER DEFAULT 1",
-                "blacklist": "INTEGER DEFAULT 0",
-                "beizhu": "TEXT"
-            }
-
-            for column, dtype in required_columns.items():
-                if column not in existing_columns:
-                    logger.info(f"[DB Permission] 添加缺失字段: {column}")
-                    await self._execute(f"ALTER TABLE ntqq_group_permissions ADD COLUMN {column} {dtype}")
-
-        except Exception as e:
-            logger.warning(f"[DB Permission] 添加字段失败（可能已存在）: {e}")
-
     async def _init_key_table(self):
         """初始化 key 表，插入默认记录"""
         try:
@@ -172,9 +115,9 @@ class TursoPermissionManager:
                 await self._execute(
                     "INSERT INTO ntqq_key (id, xydj, updated_at) VALUES (1, '', datetime('now'))"
                 )
-                logger.info("[DB Permission] 初始化 key 表完成")
+                logger.info("[DB Resource] 初始化 key 表完成")
         except Exception as e:
-            logger.warning(f"[DB Permission] 初始化 key 表失败: {e}")
+            logger.warning(f"[DB Resource] 初始化 key 表失败: {e}")
 
     async def _add_game_resource_columns(self):
         """添加游戏资源表缺失的字段"""
@@ -203,41 +146,22 @@ class TursoPermissionManager:
 
             for column, dtype in required_columns.items():
                 if column not in existing_columns:
-                    logger.info(f"[DB Permission] 添加游戏资源表字段: {column}")
+                    logger.info(f"[DB Resource] 添加游戏资源表字段: {column}")
                     await self._execute(f"ALTER TABLE game_resources ADD COLUMN {column} {dtype}")
 
         except Exception as e:
-            logger.warning(f"[DB Permission] 添加游戏资源表字段失败: {e}")
+            logger.warning(f"[DB Resource] 添加游戏资源表字段失败: {e}")
 
     def _init_local_storage(self):
         """初始化本地存储（回退模式）"""
         import sqlite3
         from pathlib import Path
 
-        db_path = Path("/home/hjh/BOT/NCBOT/data/permissions.db")
+        db_path = Path("/home/hjh/BOT/NCBOT/data/resources.db")
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._local_conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._local_cursor = self._local_conn.cursor()
-
-        # 创建权限表
-        self._local_cursor.execute("""
-            CREATE TABLE IF NOT EXISTS ntqq_group_permissions (
-                group_id TEXT PRIMARY KEY,
-                xydj INTEGER DEFAULT 0,
-                welcome INTEGER DEFAULT 0,
-                txt INTEGER DEFAULT 0,
-                help INTEGER DEFAULT 0,
-                epic INTEGER DEFAULT 0,
-                steam INTEGER DEFAULT 0,
-                chatty INTEGER DEFAULT 0,
-                resource_collector INTEGER DEFAULT 1,
-                blacklist INTEGER DEFAULT 0,
-                beizhu TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
         # 创建资源收集表
         self._local_cursor.execute("""
@@ -294,38 +218,7 @@ class TursoPermissionManager:
 
         self._local_conn.commit()
 
-        logger.info("[DB Permission] 本地 SQLite 数据库初始化完成")
-
-    def _add_missing_columns_local(self):
-        """本地模式：添加缺失的字段"""
-        try:
-            # 获取现有字段
-            self._local_cursor.execute("PRAGMA table_info(ntqq_group_permissions)")
-            result = self._local_cursor.fetchall()
-            existing_columns = {row[1] for row in result}
-
-            # 需要添加的字段
-            required_columns = {
-                "xydj": "INTEGER DEFAULT 0",
-                "welcome": "INTEGER DEFAULT 0",
-                "txt": "INTEGER DEFAULT 0",
-                "help": "INTEGER DEFAULT 0",
-                "epic": "INTEGER DEFAULT 0",
-                "steam": "INTEGER DEFAULT 0",
-                "chatty": "INTEGER DEFAULT 0",
-                "resource_collector": "INTEGER DEFAULT 1",
-                "blacklist": "INTEGER DEFAULT 0",
-                "beizhu": "TEXT"
-            }
-
-            for column, dtype in required_columns.items():
-                if column not in existing_columns:
-                    logger.info(f"[DB Permission] 本地模式添加缺失字段: {column}")
-                    self._local_cursor.execute(f"ALTER TABLE ntqq_group_permissions ADD COLUMN {column} {dtype}")
-                    self._local_conn.commit()
-
-        except Exception as e:
-            logger.warning(f"[DB Permission] 本地模式添加字段失败: {e}")
+        logger.info("[DB Resource] 本地 SQLite 数据库初始化完成")
 
     def _add_game_resource_columns_local(self):
         """本地模式：添加游戏资源表缺失的字段"""
@@ -355,12 +248,12 @@ class TursoPermissionManager:
 
             for column, dtype in required_columns.items():
                 if column not in existing_columns:
-                    logger.info(f"[DB Permission] 本地模式添加游戏资源表字段: {column}")
+                    logger.info(f"[DB Resource] 本地模式添加游戏资源表字段: {column}")
                     self._local_cursor.execute(f"ALTER TABLE game_resources ADD COLUMN {column} {dtype}")
                     self._local_conn.commit()
 
         except Exception as e:
-            logger.warning(f"[DB Permission] 本地模式添加游戏资源表字段失败: {e}")
+            logger.warning(f"[DB Resource] 本地模式添加游戏资源表字段失败: {e}")
 
     async def _execute_sql(self, sql: str, args: list = None):
         """执行 SQL 语句 (Turso HTTP API)"""
@@ -457,259 +350,6 @@ class TursoPermissionManager:
         else:
             args = list(params)
             return await self._query_sql(sql, args)
-
-    def _get_group_id_str(self, group_id) -> str:
-        """统一处理群号格式"""
-        return str(group_id).strip()
-
-    async def is_group_allowed(self, group_id, auto_create: bool = True) -> bool:
-        """检查群是否被允许使用机器人
-        
-        Args:
-            group_id: 群号
-            auto_create: 如果群不存在是否自动创建（默认True）
-        """
-        await self.initialize()
-        group_id_str = self._get_group_id_str(group_id)
-
-        # 检查是否在黑名单
-        result = await self._query(
-            "SELECT blacklist FROM ntqq_group_permissions WHERE group_id = ?",
-            (group_id_str,)
-        )
-
-        if result:
-            # 有记录，检查黑名单状态
-            return result[0][0] == 0
-
-        # 没有记录，自动添加到数据库（默认全部允许，非黑名单）
-        if auto_create:
-            logger.info(f"🆕 检测到新群 {group_id}，自动添加到权限数据库")
-            await self.set_all_plugins(group_id_str, True)
-
-        return True
-
-    async def is_plugin_enabled(self, group_id, plugin_name: str, auto_create: bool = True) -> bool:
-        """检查插件在指定群是否启用 (0=允许, 1=拒绝, 2=强制开启不受黑名单影响)
-
-        Args:
-            group_id: 群号
-            plugin_name: 插件名称
-            auto_create: 如果群不存在是否自动创建（默认True）
-
-        Returns:
-            bool: 是否启用该插件
-        """
-        await self.initialize()
-        group_id_str = self._get_group_id_str(group_id)
-
-        # 查询插件权限
-        if plugin_name not in ALL_PLUGINS:
-            return True  # 未知插件默认允许
-
-        result = await self._query(
-            f"SELECT {plugin_name}, blacklist FROM ntqq_group_permissions WHERE group_id = ?",
-            (group_id_str,)
-        )
-
-        if result:
-            plugin_value, blacklist = result[0]
-            # 2 = 强制开启（不受黑名单影响）
-            if plugin_value == 2:
-                return True
-            # 1 = 拒绝
-            if plugin_value == 1:
-                return False
-            # 0 = 允许（但受黑名单影响）
-            if plugin_value == 0:
-                return blacklist == 0  # 黑名单为0才允许
-
-        # 没有记录，自动添加到数据库（默认全部允许）
-        if auto_create:
-            logger.info(f"🆕 检测到新群 {group_id}，自动添加到权限数据库")
-            await self.set_all_plugins(group_id_str, True)
-            return True
-
-        # 不自动创建时，默认允许
-        return True
-
-    async def set_plugin_enabled(self, group_id: str, plugin_name: str, enabled: bool, force: bool = False):
-        """设置群插件启用状态
-
-        Args:
-            group_id: 群号
-            plugin_name: 插件名称
-            enabled: True=允许, False=拒绝
-            force: True=强制开启(值为2，不受黑名单影响), False=正常权限控制
-        """
-        await self.initialize()
-        group_id_str = self._get_group_id_str(group_id)
-
-        if plugin_name not in ALL_PLUGINS:
-            raise ValueError(f"未知插件: {plugin_name}")
-
-        now = datetime.now().isoformat()
-        # force=True -> value=2 (强制开启)
-        # enabled=True -> value=0 (允许)
-        # enabled=False -> value=1 (拒绝)
-        if force:
-            value = 2
-        else:
-            value = 0 if enabled else 1
-
-        # 先检查记录是否存在
-        result = await self._query(
-            "SELECT 1 FROM ntqq_group_permissions WHERE group_id = ?",
-            (group_id_str,)
-        )
-
-        if result:
-            # 更新
-            await self._execute(
-                f"UPDATE ntqq_group_permissions SET {plugin_name} = ?, updated_at = ? WHERE group_id = ?",
-                (value, now, group_id_str)
-            )
-        else:
-            # 插入新记录
-            await self._execute(
-                f"INSERT INTO ntqq_group_permissions (group_id, {plugin_name}, updated_at) VALUES (?, ?, ?)",
-                (group_id_str, value, now)
-            )
-
-        status_text = {0: "允许", 1: "拒绝", 2: "强制开启"}[value]
-        logger.info(f"[DB Permission] 设置群 {group_id} 插件 {plugin_name} 状态: {status_text}")
-
-    async def add_to_blacklist(self, group_id: str):
-        """添加群到黑名单"""
-        await self.initialize()
-        group_id_str = self._get_group_id_str(group_id)
-        now = datetime.now().isoformat()
-
-        # 先检查记录是否存在
-        result = await self._query(
-            "SELECT 1 FROM ntqq_group_permissions WHERE group_id = ?",
-            (group_id_str,)
-        )
-
-        if result:
-            await self._execute(
-                "UPDATE ntqq_group_permissions SET blacklist = 1, updated_at = ? WHERE group_id = ?",
-                (now, group_id_str)
-            )
-        else:
-            await self._execute(
-                "INSERT INTO ntqq_group_permissions (group_id, blacklist, updated_at) VALUES (?, 1, ?)",
-                (group_id_str, now)
-            )
-
-        logger.info(f"[DB Permission] 群 {group_id} 已添加到黑名单")
-
-    async def remove_from_blacklist(self, group_id: str):
-        """从黑名单移除群"""
-        await self.initialize()
-        group_id_str = self._get_group_id_str(group_id)
-        now = datetime.now().isoformat()
-
-        await self._execute(
-            "UPDATE ntqq_group_permissions SET blacklist = 0, updated_at = ? WHERE group_id = ?",
-            (now, group_id_str)
-        )
-
-        logger.info(f"[DB Permission] 群 {group_id} 已从黑名单移除")
-
-    async def get_group_config(self, group_id: str) -> Dict[str, Any]:
-        """获取指定群的完整配置"""
-        await self.initialize()
-        group_id_str = self._get_group_id_str(group_id)
-
-        result = await self._query(
-            "SELECT xydj, welcome, txt, help, epic, blacklist FROM ntqq_group_permissions WHERE group_id = ?",
-            (group_id_str,)
-        )
-
-        if result:
-            row = result[0]
-            return {
-                "group_id": group_id_str,
-                "xydj": row[0] == 0,
-                "welcome": row[1] == 0,
-                "txt": row[2] == 0,
-                "help": row[3] == 0,
-                "epic": row[4] == 0,
-                "blacklist": row[5] == 1,  # 0=否(False), 1=是(True)
-                "allowed": row[5] == 0  # 不在黑名单=允许
-            }
-
-        # 没有记录，返回默认配置（全部允许）
-        return {
-            "group_id": group_id_str,
-            "xydj": True,
-            "welcome": True,
-            "txt": True,
-            "help": True,
-            "epic": True,
-            "blacklist": False,
-            "allowed": True
-        }
-
-    async def list_enabled_plugins(self, group_id: str) -> List[str]:
-        """列出指定群启用的所有插件"""
-        await self.initialize()
-        group_id_str = self._get_group_id_str(group_id)
-
-        enabled_plugins = []
-        for plugin in ALL_PLUGINS:
-            if await self.is_plugin_enabled(group_id_str, plugin):
-                enabled_plugins.append(plugin)
-
-        return enabled_plugins
-
-    async def get_all_groups(self) -> List[str]:
-        """获取所有有配置的群"""
-        await self.initialize()
-        result = await self._query("SELECT group_id FROM ntqq_group_permissions")
-        return [row[0] for row in result]
-
-    async def delete_group_config(self, group_id: str):
-        """删除群的配置"""
-        await self.initialize()
-        group_id_str = self._get_group_id_str(group_id)
-
-        await self._execute("DELETE FROM ntqq_group_permissions WHERE group_id = ?", (group_id_str,))
-
-        logger.info(f"[DB Permission] 群 {group_id} 的配置已删除")
-
-    async def set_all_plugins(self, group_id: str, enabled: bool):
-        """一键设置所有插件状态"""
-        await self.initialize()
-        group_id_str = self._get_group_id_str(group_id)
-        now = datetime.now().isoformat()
-        value = 0 if enabled else 1
-
-        # 先检查记录是否存在
-        result = await self._query(
-            "SELECT 1 FROM ntqq_group_permissions WHERE group_id = ?",
-            (group_id_str,)
-        )
-
-        if result:
-            # 更新所有插件
-            await self._execute(
-                """UPDATE ntqq_group_permissions SET 
-                    xydj = ?, welcome = ?, txt = ?, help = ?, epic = ?, 
-                    updated_at = ? WHERE group_id = ?""",
-                (value, value, value, value, value, now, group_id_str)
-            )
-        else:
-            # 插入新记录
-            await self._execute(
-                """INSERT INTO ntqq_group_permissions 
-                    (group_id, xydj, welcome, txt, help, epic, updated_at) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (group_id_str, value, value, value, value, value, now)
-            )
-
-        logger.info(f"[DB Permission] 设置群 {group_id} 所有插件状态: {'允许' if enabled else '拒绝'}")
 
     # ========== 资源收集相关方法 ==========
     async def save_resource(self, name: str, links: Dict[str, Optional[str]],
@@ -1239,5 +879,5 @@ class TursoPermissionManager:
             return False
 
 
-# 全局权限管理器实例
-db_permission_manager = TursoPermissionManager()
+# 全局资源管理器实例（保持向后兼容的变量名）
+db_permission_manager = TursoResourceManager()

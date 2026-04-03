@@ -1,0 +1,7 @@
+# 微信小程序码发送插件配置
+
+# 微信小程序 AppID
+WECHAT_APPID: "wx20f0bfaa0bd7d7a1"
+
+# 微信小程序 AppSecret
+WECHAT_SECRET: "9de31d06cf6f7813b1e57f31ad0dd626"

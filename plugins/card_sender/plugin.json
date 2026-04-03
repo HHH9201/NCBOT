@@ -1,0 +1,38 @@
+{
+  "name": "card_sender",
+  "version": "1.0.0",
+  "description": "微信小程序码发送插件，支持生成并发送圆形小程序码到 QQ 群",
+  "author": "NcatBot",
+  "dependencies": [
+    "requests"
+  ],
+  "config": {
+    "WECHAT_APPID": {
+      "description": "微信小程序 AppID",
+      "type": "string",
+      "required": true
+    },
+    "WECHAT_SECRET": {
+      "description": "微信小程序 AppSecret",
+      "type": "string",
+      "required": true
+    }
+  },
+  "commands": [
+    {
+      "command": "生成动态码",
+      "description": "生成微信小程序码（圆形二维码）",
+      "usage": "生成动态码 [页面路径] [参数]"
+    },
+    {
+      "command": "小程序码",
+      "description": "生成微信小程序码（圆形二维码）",
+      "usage": "小程序码 [页面路径] [参数]"
+    },
+    {
+      "command": "卡片帮助",
+      "description": "显示插件帮助信息",
+      "usage": "卡片帮助"
+    }
+  ]
+}
