@@ -4,7 +4,12 @@ import logging
 from typing import List, Dict, Union, Optional
 import os
 import base64
+from dotenv import load_dotenv
 from .config import GLOBAL_CONFIG
+
+# 加载根目录 .env 配置
+env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+load_dotenv(env_path)
 
 class NapCatService:
     """
@@ -13,8 +18,9 @@ class NapCatService:
     """
     
     def __init__(self):
-        self.api_url = GLOBAL_CONFIG.get("napcat.url", "http://101.35.164.122:3006").rstrip('/')
-        self.token = GLOBAL_CONFIG.get("napcat.token", "he031701")
+        # 优先从环境变量读取
+        self.api_url = os.getenv("NAPCAT_URL") or GLOBAL_CONFIG.get("napcat.url", "http://101.35.164.122:3006").rstrip('/')
+        self.token = os.getenv("NAPCAT_TOKEN") or GLOBAL_CONFIG.get("napcat.token", "he031701")
         self.headers = {
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {self.token}'

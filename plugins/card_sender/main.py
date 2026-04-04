@@ -7,6 +7,7 @@
 
 import os
 import time
+import asyncio
 import httpx
 import uvicorn
 import logging

@@ -1,8 +1,14 @@
 # /home/hjh/BOT/NCBOT/common/ai.py
 import aiohttp
 import logging
+import os
 from typing import List, Dict, Optional, Union, AsyncGenerator
+from dotenv import load_dotenv
 from .config import GLOBAL_CONFIG
+
+# 加载根目录 .env 配置
+env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+load_dotenv(env_path)
 
 # 尝试导入 OpenAI 客户端用于 ModelScope
 try:
@@ -19,7 +25,8 @@ class AIService:
     def __init__(self):
         # SiliconFlow 配置
         self.api_url = GLOBAL_CONFIG.get("siliconflow.url", "https://api.siliconflow.cn/v1/chat/completions")
-        self.api_key = GLOBAL_CONFIG.get("siliconflow.api_key", "sk-ixmsswryqnmuyifjewdetqnjewdetq")
+        # 优先从环境变量读取
+        self.api_key = os.getenv("SILICONFLOW_API_KEY") or GLOBAL_CONFIG.get("siliconflow.api_key", "sk-ixmsswryqnmuyifjewdetqnjewdetq")
         self.model = GLOBAL_CONFIG.get("siliconflow.model", "moonshotai/Kimi-K2-Instruct-0905")
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -29,7 +36,7 @@ class AIService:
         
         # ModelScope 配置
         self.modelscope_url = "https://api-inference.modelscope.cn/v1"
-        self.modelscope_key = GLOBAL_CONFIG.get("modelscope.api_key", "ms-71cf0ad0-ca1a-4da5-9832-7b187bdec0a8")
+        self.modelscope_key = os.getenv("MODELSCOPE_API_KEY") or GLOBAL_CONFIG.get("modelscope.api_key", "ms-71cf0ad0-ca1a-4da5-9832-7b187bdec0a8")
         self.modelscope_model = GLOBAL_CONFIG.get("modelscope.model", "ZhipuAI/GLM-4.7-Flash")
 
     async def chat_completions(self, 

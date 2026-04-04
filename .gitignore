@@ -23,3 +23,6 @@ flashfransfer/
 Crashpad/
 nt_temp/
 nt_db/
+.env
+.venv/
+__pycache__/

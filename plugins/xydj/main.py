@@ -9,6 +9,8 @@ import time
 import json
 import asyncio
 import logging
+import httpx
+import base64
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 from bs4 import BeautifulSoup
@@ -18,10 +20,15 @@ from ncatbot.event.qq import GroupMessageEvent
 from ncatbot.types import PlainText, At, Reply, MessageArray, Image
 from ncatbot.types.qq import Json, ForwardConstructor, Share
 from ncatbot.core.registry import registrar
+from dotenv import load_dotenv
+
+# 加载根目录 .env 配置
+env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
+load_dotenv(env_path)
 
 # 引入全局服务和配置
 from common import (
-    napcat_service, ai_service, GLOBAL_CONFIG,
+    ai_service, GLOBAL_CONFIG,
     image_to_base64, normalize_text, convert_roman_to_arabic,
     load_yaml, save_yaml, clean_filename,
     DEFAULT_HEADERS, db_manager, AsyncHttpClient
@@ -817,38 +824,6 @@ async def extract_download_info(game_url: str, skip_cache: bool = False):
             return [f"解析游戏信息时出错: {e}"], ""
 
 
-async def send_final_forward(group_id, 单机_lines: list[str], user_id: str = "0", user_nickname: str = "游戏助手"):
-    """一次性构造：单机版资源"""
-    nodes = []
-
-    # 提取游戏名
-    game_title = ""
-    for line in 单机_lines:
-        if "游戏名字：" in line:
-            game_title = line.split("游戏名字：")[1].strip()
-            break
-    if not game_title:
-        game_title = "游戏资源"
-
-    # 单机版节点
-    单机_msgs = [{"type": "text", "data": {"text": line}} for line in 单机_lines]
-    nodes.append(napcat_service.construct_node(user_id, user_nickname, 单机_msgs))
-
-    # 计算资源数量（统计包含 http 的网盘链接行）
-    single_count = len([line for line in 单机_lines if "http" in line])
-    
-    summary = f"共找到 {single_count} 个资源链接"
-
-    return await napcat_service.send_group_forward_msg(
-        group_id=group_id,
-        nodes=nodes,
-        source=game_title,
-        summary=summary,
-        prompt=f"[{game_title[:30]}]",
-        news=[{"text": "点击查看游戏资源详情"}]
-    )
-
-
 class SearchSession:
     def __init__(self, user_id, games, task=None, force_update=False):
         self.user_id = user_id
@@ -888,157 +863,194 @@ class Xydj(NcatBotPlugin):
         """统一处理游戏资源获取和发送的函数
         
         逻辑流程：
-        1. 先检查数据库是否有该游戏的链接
-        2. 创建 ticket 让用户看广告
-        3. 后台轮询：如果数据库有链接直接发，没有则去网站获取并存入数据库再发
-        
-        Args:
-            game: 游戏数据（来自网站搜索）
-            event: 消息事件
-            force_update: 是否强制从网站更新（覆盖数据库）
+        1. 优先向后端请求预生成的秒发小程序码链接
+        2. 发送小程序码给用户，提示看广告
+        3. 启动后台异步轮询，等待用户点击“修成正果”
+        4. 用户验证通过后，自动在群内发送合并转发的资源链接
         """
         print(f"[Resource] Processing: {game['title']}, force_update: {force_update}")
         try:
             # 获取处理后的名字和中文展示名
             english_keyword, chinese_display = extract_english_name(game['title'])
-            # 打印搜索用的英文名到控制台
             print(f"[搜索关键词] 中文名: {chinese_display}, 英文名: {english_keyword}")
 
-            # ============== 创建 Ticket ==================
-            # 先创建 ticket 让用户看广告，资源在后台获取
-            api_base = "https://hhxyyq.online"
-            try:
-                # 拼接游戏标题作为资源占位
-                resource_text = f"游戏：{chinese_display}"
-                payload = {
-                    "platform": "qq_id",
-                    "platform_id": str(event.user_id),
-                    "app_id": "ncatbot_xydj",
-                    "resource_payload": resource_text
-                }
-                import traceback
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(f"{api_base}/api/task/create", json=payload, timeout=10) as response:
-                            res = await response.json()
-                            print(f"[Resource] API Response: {res}")
-                except Exception as req_e:
-                    print(f"[Resource] aiohttp Request Exception: {req_e}")
-                    traceback.print_exc()
-                    raise req_e
+            # 从 .env 读取配置
+            BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8978")
+            APP_ID = os.getenv("APP_ID", "card_sender")
+            APP_SECRET = os.getenv("APP_SECRET", "card_sender_secret")
 
-                # 直接获取资源并发送（跳过票据和小程序流程）
-                单机内容 = await self._get_resource_content(
-                    game, english_keyword, chinese_display,
-                    force_update, [], None, ""
+            async with httpx.AsyncClient() as client:
+                # 1. 优先请求“现成”的小程序码 (秒发模式)
+                response = await client.post(
+                    f"{BACKEND_URL}/api/task/pop_ready",
+                    json={
+                        "platform": "qq_id",
+                        "platform_id": str(event.user_id),
+                        "app_id": APP_ID,
+                        "resource_payload": f"游戏：{chinese_display}"
+                    },
+                    headers={"app-id": APP_ID, "app-secret": APP_SECRET},
+                    timeout=10.0
+                )
+                
+                # 2. 如果池子空了 (503) 或报错，回退到实时生成模式
+                if response.status_code != 200:
+                    print(f"[Resource] 池子暂无现成票据 (Code: {response.status_code})，回退到实时生成...")
+                    response = await client.post(
+                        f"{BACKEND_URL}/api/task/create",
+                        json={
+                            "platform": "qq_id",
+                            "platform_id": str(event.user_id),
+                            "app_id": APP_ID,
+                            "resource_payload": {"game": chinese_display}
+                        },
+                        headers={"app-id": APP_ID, "app-secret": APP_SECRET},
+                        timeout=15.0
+                    )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    ticket_id = data.get("ticket")
+                    qrcode_url = data.get("qrcode_url")
+                    
+                    if ticket_id and qrcode_url:
+                        # 3. 发送小程序码图片 (针对本地 API URL 优化下载)
+                        if "/api/task/qrcode/" in qrcode_url or "/api/qrcode/" in qrcode_url:
+                            try:
+                                # 强制使用本地 BACKEND_URL 下载以避开 Nginx 404
+                                download_url = f"{BACKEND_URL}/api/task/qrcode/{ticket_id}"
+                                print(f"[Resource] 正在从本地下载二维码: {download_url}")
+                                img_resp = await client.get(download_url, timeout=10)
+                                if img_resp.status_code == 200:
+                                    import base64
+                                    img_b64 = f"base64://{base64.b64encode(img_resp.content).decode()}"
+                                    await event.reply(image=img_b64)
+                                else:
+                                    print(f"[Resource] 本地下载失败 (Code: {img_resp.status_code})，回退到原始 URL")
+                                    await event.reply(image=qrcode_url)
+                            except Exception as download_e:
+                                print(f"[Resource] 下载二维码异常: {download_e}")
+                                await event.reply(image=qrcode_url)
+                        else:
+                            # 外部 URL (如 Qiniu) 直接发送
+                            await event.reply(image=qrcode_url)
+                        
+                        # 4. 启动后台异步轮询任务 (预取内容 + 等待点击)
+                        user_id = str(event.user_id)
+                        user_nickname = event.sender.nickname
+                        
+                        asyncio.create_task(self._wait_and_send_resource(
+                            event, event.group_id, ticket_id, game, 
+                            english_keyword, chinese_display, user_id, user_nickname, 
+                            force_update=force_update
+                        ))
+                        return
+                
+                # 如果两种方式都失败，提示稍后重试
+                await event.reply(
+                    rtf=MessageArray([Reply(id=event.message_id), PlainText(text="❌ 系统正忙，请 10 秒后再次搜索重试。")])
                 )
 
-                if 单机内容:
-                    await send_final_forward(event.group_id, 单机内容, str(event.user_id), event.sender.nickname)
-                else:
-                    await event.reply(
-                        rtf=MessageArray([Reply(id=event.message_id), PlainText(text="❌ 获取资源失败，请稍后重试。")])
-                    )
-
-                # 以下代码已注释，跳过票据和小程序流程
-                # ticket_id = res.get("ticket")
-                # ... 原票据和卡片发送代码 ...
-
-            except Exception as api_e:
-                print(f"[Resource] API Error: {api_e}")
-                await event.reply(rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"服务器通信失败: {str(api_e)}")]))
-                return
-
         except Exception as e:
+            import traceback
             print(f"[Resource] Processing exception: {e}")
+            traceback.print_exc()
             await event.reply(
                 rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"处理失败: {str(e)}")])
             )
 
     async def _wait_and_send_resource(self, event, group_id, ticket_id, game, english_keyword, chinese_display, user_id, user_nickname, force_update=False):
-        """轮询查询后端 Ticket 状态，如果验证通过则获取并发送资源
-        
-        逻辑流程：
-        1. 先检查数据库是否有该游戏的链接
-        2. 如果没有，在用户看广告的同时去网站获取并存入数据库
-        3. 用户看完广告后，发送资源
-        """
-        max_retries = 30  # 最大轮询次数，比如30次（即2分钟）
-        delay = 4         # 每次轮询间隔4秒
+        """轮询查询后端 Ticket 状态，如果验证通过则获取并发送资源"""
+        max_retries = 45  # 最大轮询次数，约 3 分钟
+        delay = 4         # 每次轮询间隔 4 秒
         
         # 告诉用户正在等待验证
         await event.reply(
-            rtf=MessageArray([Reply(id=event.message_id), PlainText(text="✅ 请点击上方小程序链接（或卡片），在小程序内完成任务（例如看个广告）即可获取资源哦~ 我在这等你！")])
+            rtf=MessageArray([Reply(id=event.message_id), PlainText(text="✅ 请扫码在小程序内点击“修成正果”，完成后我将立即在此发送资源链接！")])
         )
         
-        # 先检查数据库是否有链接（在看广告期间可以并行执行）
+        # 预先检查一次数据库
         db_games = await search_game_in_db(english_keyword)
-        has_db_link = len(db_games) > 0 and db_games[0].get('download_links')
         
-        # 如果数据库没有链接且不是强制更新模式，预先去网站获取（用户看广告时并行执行）
-        fetched_lines = None
-        web_updated_at = ""
-        if not has_db_link and not force_update:
-            print(f"[Wait Resource] 数据库无链接，预取网站数据: {chinese_display}")
-            try:
-                fetched_lines, web_updated_at = await extract_download_info(game['url'], skip_cache=False)
-                if fetched_lines:
-                    # 保存到数据库
-                    await save_game_to_db(english_keyword, game, fetched_lines, web_updated_at)
-                    print(f"[Wait Resource] 已预取并保存到数据库: {chinese_display}")
-            except Exception as e:
-                print(f"[Wait Resource] 预取数据失败: {e}")
+        # 立即开始执行搜索抓取任务 (预取资源内容，不等用户点击)
+        print(f"[Pre-fetch] 正在立即执行搜索抓取任务: {chinese_display}")
+        pre_fetched_content = await self._get_resource_content(
+            game, english_keyword, chinese_display, 
+            force_update, db_games
+        )
+        
+        if pre_fetched_content:
+            print(f"[Pre-fetch] 资源抓取成功: {chinese_display}")
+        else:
+            print(f"[Pre-fetch] 资源抓取失败: {chinese_display}")
+
+        # 从 .env 读取配置
+        BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8978")
         
         for i in range(max_retries):
             await asyncio.sleep(delay)
             try:
-                # 调用后端接口查询 ticket 状态
-                query_url = f"https://hhxyyq.online/api/user/get_result?ticket={ticket_id}"
+                # 核心修复：使用内部 BACKEND_URL 进行轮询，避免外部域名连接超时
+                query_url = f"{BACKEND_URL}/api/user/get_result?ticket={ticket_id}"
                 
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(query_url, timeout=5) as resp:
-                        response = await resp.json()
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(query_url, timeout=5)
+                    response = resp.json()
+                
+                # 打印轮询状态便于调试
+                print(f"[Poll Ticket] Ticket: {ticket_id}, Status Response: {response}")
                         
-                if response and response.get("success"):
+                if response:
+                    # 针对后端多进程数据不同步的临时容错：遇到 404 不立即报错，继续轮询
+                    if isinstance(response, dict) and response.get("detail") == "记录不存在或已过期":
+                        print(f"⚠️ [Poll Warning] 遇到后端进程数据不同步(404)，正在等待重试...")
+                        continue
+
                     status = response.get("status")
-                    if status == "claimed" or status == "verified":
-                        # 验证通过，获取资源并发送
-                        单机内容 = await self._get_resource_content(
-                            game, english_keyword, chinese_display, 
-                            force_update, db_games, fetched_lines, web_updated_at
-                        )
+                    # 只要状态是 verified 或 claimed，都视为验证通过
+                    if status in ["verified", "claimed"]:
+                        print(f"🎊 [Poll Success] Ticket {ticket_id} 验证通过, 状态: {status}")
                         
-                        if 单机内容:
-                            await send_final_forward(group_id, 单机内容, user_id, user_nickname)
+                        # 验证通过，立即发送预取的内容
+                        if pre_fetched_content:
+                            await self._send_final_forward(group_id, pre_fetched_content, user_id, user_nickname)
+                            # 给小程序也同步一个提示
+                            await event.reply(rtf=MessageArray([PlainText(text="🎉 验证成功！资源已在上方以合并转发形式发出，请查收。")]))
                         else:
-                            await event.reply(
-                                rtf=MessageArray([Reply(id=event.message_id), PlainText(text="❌ 获取资源失败，请稍后重试。")])
+                            # 如果预取失败，最后再尝试获取一次
+                            final_attempt = await self._get_resource_content(
+                                game, english_keyword, chinese_display, 
+                                force_update, db_games
                             )
+                            if final_attempt:
+                                await self._send_final_forward(group_id, final_attempt, user_id, user_nickname)
+                                await event.reply(rtf=MessageArray([PlainText(text="🎉 验证成功！资源已在上方以合并转发形式发出，请查收。")]))
+                            else:
+                                await event.reply(rtf=MessageArray([PlainText(text="❌ 验证成功但资源获取失败，请联系管理员。")]))
                         return
             except Exception as e:
                 import traceback
-                print(f"[Poll Ticket] 轮询出错: {e}")
-                traceback.print_exc()
-                pass
+                error_details = traceback.format_exc()
+                print(f"[Poll Ticket] 轮询出错: {e}\n{error_details}")
                 
         # 轮询超时
         await event.reply(
-            rtf=MessageArray([Reply(id=event.message_id), PlainText(text="⏳ 等待超时啦，好像你还没有完成任务，资源未发放，需要重新搜索哦。")])
+            rtf=MessageArray([Reply(id=event.message_id), PlainText(text="⏳ 验证超时，你好像还没看完广告哦。如果已看请重新搜索。")])
         )
     
-    async def _get_resource_content(self, game, english_keyword, chinese_display, force_update, db_games, fetched_lines, web_updated_at):
+    async def _get_resource_content(self, game, english_keyword, chinese_display, force_update, db_games):
         """获取资源内容，优先从数据库获取，没有则从网站获取"""
         单机_lines = []
         
-        # 如果是强制更新模式，直接从网站获取
+        # 1. 如果是强制更新模式，直接从网站获取
         if force_update:
             print(f"[Get Resource] 强制更新模式，从网站获取: {chinese_display}")
-            单机_lines, _ = await extract_download_info(game['url'], skip_cache=True)
-            if 单机_lines:
+            单机_lines, web_updated_at = await extract_download_info(game['url'], skip_cache=True)
+            if 单机_lines and any("http" in line for line in 单机_lines):
                 await save_game_to_db(english_keyword, game, 单机_lines, web_updated_at)
             return self._build_resource_content(chinese_display, 单机_lines)
         
-        # 1. 先检查数据库
+        # 2. 先检查数据库 (db_games 是在外部预取的)
         if db_games and db_games[0].get('download_links'):
             print(f"[Get Resource] 使用数据库数据: {chinese_display}")
             game_data = db_games[0]
@@ -1048,15 +1060,10 @@ class Xydj(NcatBotPlugin):
                 单机_lines.append(link)
             return self._build_resource_content(chinese_display, 单机_lines)
         
-        # 2. 数据库没有，使用预取的数据
-        if fetched_lines:
-            print(f"[Get Resource] 使用预取数据: {chinese_display}")
-            return self._build_resource_content(chinese_display, fetched_lines)
-        
-        # 3. 预取也失败了，最后尝试从网站获取
-        print(f"[Get Resource] 最后尝试从网站获取: {chinese_display}")
-        单机_lines, _ = await extract_download_info(game['url'], skip_cache=False)
-        if 单机_lines:
+        # 3. 数据库没有，尝试从网站获取
+        print(f"[Get Resource] 数据库无记录，从网站获取: {chinese_display}")
+        单机_lines, web_updated_at = await extract_download_info(game['url'], skip_cache=False)
+        if 单机_lines and any("http" in line for line in 单机_lines):
             await save_game_to_db(english_keyword, game, 单机_lines, web_updated_at)
         return self._build_resource_content(chinese_display, 单机_lines)
     
@@ -1072,6 +1079,41 @@ class Xydj(NcatBotPlugin):
             单机内容.append(f"{line}\n")
 
         return 单机内容
+
+    async def _send_final_forward(self, group_id, 单机_lines: list[str], user_id: str = "0", user_nickname: str = "游戏助手"):
+        """使用 NcatBot 原生 ForwardConstructor 发送合并转发消息"""
+        from ncatbot.types.qq import ForwardConstructor
+        
+        fc = ForwardConstructor()
+        
+        # 提取游戏名用于提示
+        game_title = ""
+        for line in 单机_lines:
+            if "游戏名字：" in line:
+                game_title = line.split("游戏名字：")[1].strip()
+                break
+        if not game_title:
+            game_title = "游戏资源"
+
+        # 构造节点内容
+        content_text = "".join(单机_lines)
+        
+        # 添加节点
+        fc.attach_text(text=content_text, user_id=user_id, nickname=user_nickname)
+        
+        # 发送
+        try:
+            await self.api.qq.post_group_forward_msg(group_id, fc.build())
+            print(f"✅ [Forward] 合并转发消息已发送: {game_title}")
+            return True
+        except Exception as e:
+            print(f"❌ [Forward] 发送失败: {e}")
+            # 降级：如果转发失败，尝试直接发送
+            try:
+                await self.api.qq.send_group_text(group_id, content_text)
+                return True
+            except:
+                return False
 
     @registrar.on_group_message()
     async def on_group_message(self, event: GroupMessageEvent):
