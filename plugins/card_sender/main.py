@@ -5,28 +5,33 @@
 3. 插件收到 Webhook -> 立即回复用户 "测试成功"
 """
 
-import logging
-import asyncio
+import os
+import time
 import httpx
 import uvicorn
-import time
-import os
+import logging
 from io import BytesIO
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request as FastRequest, Header, HTTPException
 from ncatbot.plugin import NcatBotPlugin
 from ncatbot.core import registrar
 from ncatbot.event.qq import GroupMessageEvent, PrivateMessageEvent
 
+# 加载根目录 .env 配置
+# 查找路径：当前文件 -> plugins -> NCBOT 根目录
+env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
+load_dotenv(env_path)
+
 # 使用框架自带的日志系统
 logger = logging.getLogger("CardSender")
 
-# 配置信息
-BACKEND_URL = "http://127.0.0.1:8978"
-BOT_WEBHOOK_PORT = 8979
+# 从环境变量读取配置 (带默认值)
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8978")
+BOT_WEBHOOK_PORT = int(os.getenv("BOT_WEBHOOK_PORT", "8979"))
 BOT_WEBHOOK_URL = f"http://127.0.0.1:{BOT_WEBHOOK_PORT}/webhook"
-APP_ID = "card_sender"
-APP_SECRET = "card_sender_secret"
-WEBHOOK_TOKEN = "cs_8f2d9e1a4b7c6d5e8f0a1b2c3d4e5f6g" 
+APP_ID = os.getenv("APP_ID", "card_sender")
+APP_SECRET = os.getenv("APP_SECRET", "card_sender_secret")
+WEBHOOK_TOKEN = os.getenv("WEBHOOK_TOKEN", "cs_8f2d9e1a4b7c6d5e8f0a1b2c3d4e5f6g") 
 
 # 创建一个全局的 FastAPI 应用用于接收 Webhook
 webhook_app = FastAPI()
