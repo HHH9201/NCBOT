@@ -10,7 +10,9 @@ import asyncio
 import httpx
 import uvicorn
 import time
-from fastapi import FastAPI, Request as FastRequest
+import os
+from io import BytesIO
+from fastapi import FastAPI, Request as FastRequest, Header, HTTPException
 from ncatbot.plugin import NcatBotPlugin
 from ncatbot.core import registrar
 from ncatbot.event.qq import GroupMessageEvent, PrivateMessageEvent
@@ -24,14 +26,20 @@ BOT_WEBHOOK_PORT = 8979
 BOT_WEBHOOK_URL = f"http://127.0.0.1:{BOT_WEBHOOK_PORT}/webhook"
 APP_ID = "card_sender"
 APP_SECRET = "card_sender_secret"
+WEBHOOK_TOKEN = "cs_8f2d9e1a4b7c6d5e8f0a1b2c3d4e5f6g" 
 
 # 创建一个全局的 FastAPI 应用用于接收 Webhook
 webhook_app = FastAPI()
 _current_plugin_instance = None
 
 @webhook_app.post("/webhook")
-async def handle_webhook(request: FastRequest):
-    """处理来自后端的 Webhook 通知"""
+async def handle_webhook(request: FastRequest, x_auth_token: str = Header(None)):
+    """处理来自后端的 Webhook 通知 (带鉴权)"""
+    # 鉴权逻辑
+    if x_auth_token != WEBHOOK_TOKEN:
+        logger.warning(f"⚠️ 收到非法的 Webhook 请求，Token 不匹配: {x_auth_token}")
+        raise HTTPException(status_code=403, detail="Invalid Auth Token")
+        
     try:
         data = await request.json()
         ticket = data.get("ticket")
@@ -45,10 +53,10 @@ async def handle_webhook(request: FastRequest):
     return {"status": "ok"}
 
 class CardSenderPlugin(NcatBotPlugin):
-    """联动测试插件"""
+    """联动测试插件 - 轻量化版"""
 
     name = "card_sender"
-    version = "3.4.0"
+    version = "4.0.0"
 
     async def on_load(self):
         """插件加载时启动 Webhook 服务"""
@@ -68,65 +76,70 @@ class CardSenderPlugin(NcatBotPlugin):
             task_info = self.pending_tasks.pop(ticket)
             event = task_info["event"]
             start_time = task_info["start_time"]
-            qrcode_time = task_info["qrcode_time"]
             
             end_time = time.time()
             total_duration = end_time - start_time
-            user_action_duration = end_time - qrcode_time
             
             await event.reply("✅ 测试成功")
-            logger.info(f"⏱️ 任务完成耗时统计 [Ticket: {ticket}]:")
-            logger.info(f"   - 总耗时: {total_duration:.2f}s")
-            logger.info(f"   - 用户扫码+点击耗时: {user_action_duration:.2f}s")
+            logger.info(f"⏱️ 任务完成 [Ticket: {ticket}], 总耗时: {total_duration:.2f}s")
 
-    async def _handle_logic(self, event):
-        """核心业务逻辑"""
+    async def _handle_logic(self, event, mode="qrcode"):
+        """核心业务逻辑 (已改造为向后端请求预生成资源)"""
         start_time = time.time()
+        logger.info(f"收到指令 '{mode}', 来自用户: {event.user_id}")
+        
         try:
             async with httpx.AsyncClient() as client:
+                # 请求后端获取一个已经上传好七牛云的“现成”票据
                 response = await client.post(
-                    f"{BACKEND_URL}/api/task/create",
+                    f"{BACKEND_URL}/api/task/pop_ready",
                     json={
                         "platform": "qq_id",
                         "platform_id": str(event.user_id),
                         "app_id": APP_ID,
-                        "callback_url": BOT_WEBHOOK_URL
+                        "callback_url": BOT_WEBHOOK_URL,
                     },
                     headers={"app-id": APP_ID, "app-secret": APP_SECRET},
-                    timeout=30.0
+                    timeout=10.0
                 )
                 
                 if response.status_code == 200:
                     data = response.json()
                     ticket = data.get("ticket")
-                    qrcode_url = data.get("qrcode_url")
+                    qrcode_url = data.get("qrcode_url") # 后端此时应返回已上传七牛云的 URL
                     
                     if ticket and qrcode_url:
-                        qrcode_ready_time = time.time()
-                        creation_duration = qrcode_ready_time - start_time
-                        
                         self.pending_tasks[ticket] = {
                             "event": event,
-                            "start_time": start_time,
-                            "qrcode_time": qrcode_ready_time
+                            "start_time": start_time
                         }
-                        
                         await event.reply(image=qrcode_url)
-                        logger.info(f"⏱️ 任务创建耗时 [Ticket: {ticket}]: {creation_duration:.2f}s")
+                        logger.info(f"⚡ [后端池子] 获取成功! Ticket: {ticket}, 响应耗时: {time.time() - start_time:.2f}s")
+                else:
+                    logger.error(f"后端返回错误: {response.status_code} - {response.text}")
+                    await event.reply(f"❌ 后端池子异常: {response.status_code}")
+                            
         except Exception as e:
-            logger.error(f"处理失败: {e}")
+            import traceback
+            logger.error(f"处理指令 '{mode}' 发生异常: {e}")
+            logger.error(traceback.format_exc())
+            await event.reply(f"❌ 处理失败: {str(e)}")
+
+    @registrar.on_group_command("2")
+    async def handle_scheme_group(self, event: GroupMessageEvent):
+        await self._handle_logic(event, mode="scheme")
+
+    @registrar.on_private_command("2")
+    async def handle_scheme_private(self, event: PrivateMessageEvent):
+        await self._handle_logic(event, mode="scheme")
 
     @registrar.on_group_command("3")
     async def handle_test_group(self, event: GroupMessageEvent):
-        await self._handle_logic(event)
+        await self._handle_logic(event, mode="qrcode")
 
     @registrar.on_private_command("3")
     async def handle_test_private(self, event: PrivateMessageEvent):
-        await self._handle_logic(event)
-
-# 插件入口
-entry_class = CardSenderPlugin
-
+        await self._handle_logic(event, mode="qrcode")
 
 # 插件入口
 entry_class = CardSenderPlugin
