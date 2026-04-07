@@ -843,13 +843,10 @@ class Xydj(NcatBotPlugin):
         # 初始化数据库缓存表
         init_cache_db()
 
-    async def countdown(self, event, group_id, session_obj):
-        # 改回 20 秒
+    async def countdown(self, event, group_id):
         await asyncio.sleep(20)
-        # 获取当前最新的 session
-        current_session = self.sessions.get(group_id)
-        # 只有当 session 仍然是同一个对象，且未进入处理状态时，才触发超时
-        if current_session is session_obj and not current_session.processing:
+        session = self.sessions.get(group_id)
+        if session and not session.processing:
             self._cleanup(group_id)
             await event.reply(
                 rtf=MessageArray([Reply(id=event.message_id), PlainText(text="等待超时，操作已取消。请重新搜索")])
@@ -868,134 +865,178 @@ class Xydj(NcatBotPlugin):
         逻辑流程：
         1. 优先向后端请求预生成的秒发小程序码链接
         2. 发送小程序码给用户，提示看广告
-        3. 启动后台异步轮询，等待用户点击“点击获取”
+        3. 启动后台异步轮询，等待用户点击“修成正果”
         4. 用户验证通过后，自动在群内发送合并转发的资源链接
         """
-        # 【临时修改】跳过小程序验证，直接发送资源
-        print(f"[Resource] Processing (Direct Mode): {game['title']}, force_update: {force_update}")
+        print(f"[Resource] Processing: {game['title']}, force_update: {force_update}")
         try:
+            # 获取处理后的名字和中文展示名
             english_keyword, chinese_display = extract_english_name(game['title'])
-            # 提示正在抓取资源 (已根据要求注释)
-            # await event.reply(rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"🔍 正在为您获取资源：{chinese_display}，请稍候...")]))
-            user_id = str(event.user_id)
-            user_nickname = event.sender.nickname
-            group_id = event.group_id
-            db_games = await search_game_in_db(english_keyword)
-            pre_fetched_content = await self._get_resource_content(game, english_keyword, chinese_display, force_update, db_games)
-            if pre_fetched_content:
-                await self._send_final_forward(group_id, pre_fetched_content, user_id, user_nickname)
-                # 发送成功提示 (已根据要求注释)
-                # await event.reply(rtf=MessageArray([PlainText(text=f"🎉 资源【{chinese_display}】已在上方以合并转发形式发出，请查收！")]))
-            else:
-                await event.reply(rtf=MessageArray([Reply(id=event.message_id), PlainText(text="❌ 很抱歉，暂未获取到该资源的有效链接。")]))
-            return
+            print(f"[搜索关键词] 中文名: {chinese_display}, 英文名: {english_keyword}")
+
+            # 从 .env 读取配置
+            BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8978")
+            APP_ID = os.getenv("APP_ID", "card_sender")
+            APP_SECRET = os.getenv("APP_SECRET", "card_sender_secret")
+
+            async with httpx.AsyncClient() as client:
+                # 1. 优先请求“现成”的小程序码 (秒发模式)
+                response = await client.post(
+                    f"{BACKEND_URL}/api/task/pop_ready",
+                    json={
+                        "platform": "qq_id",
+                        "platform_id": str(event.user_id),
+                        "app_id": APP_ID,
+                        "resource_payload": f"游戏：{chinese_display}"
+                    },
+                    headers={"app-id": APP_ID, "app-secret": APP_SECRET},
+                    timeout=10.0
+                )
+                
+                # 2. 如果池子空了 (503) 或报错，回退到实时生成模式
+                if response.status_code != 200:
+                    print(f"[Resource] 池子暂无现成票据 (Code: {response.status_code})，回退到实时生成...")
+                    response = await client.post(
+                        f"{BACKEND_URL}/api/task/create",
+                        json={
+                            "platform": "qq_id",
+                            "platform_id": str(event.user_id),
+                            "app_id": APP_ID,
+                            "resource_payload": {"game": chinese_display}
+                        },
+                        headers={"app-id": APP_ID, "app-secret": APP_SECRET},
+                        timeout=15.0
+                    )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    ticket_id = data.get("ticket")
+                    qrcode_url = data.get("qrcode_url")
+                    
+                    if ticket_id and qrcode_url:
+                        # 3. 发送小程序码图片 (针对本地 API URL 优化下载)
+                        if "/api/task/qrcode/" in qrcode_url or "/api/qrcode/" in qrcode_url:
+                            try:
+                                # 强制使用本地 BACKEND_URL 下载以避开 Nginx 404
+                                download_url = f"{BACKEND_URL}/api/task/qrcode/{ticket_id}"
+                                print(f"[Resource] 正在从本地下载二维码: {download_url}")
+                                img_resp = await client.get(download_url, timeout=10)
+                                if img_resp.status_code == 200:
+                                    import base64
+                                    img_b64 = f"base64://{base64.b64encode(img_resp.content).decode()}"
+                                    await event.reply(image=img_b64)
+                                else:
+                                    print(f"[Resource] 本地下载失败 (Code: {img_resp.status_code})，回退到原始 URL")
+                                    await event.reply(image=qrcode_url)
+                            except Exception as download_e:
+                                print(f"[Resource] 下载二维码异常: {download_e}")
+                                await event.reply(image=qrcode_url)
+                        else:
+                            # 外部 URL (如 Qiniu) 直接发送
+                            await event.reply(image=qrcode_url)
+                        
+                        # 4. 启动后台异步轮询任务 (预取内容 + 等待点击)
+                        user_id = str(event.user_id)
+                        user_nickname = event.sender.nickname
+                        
+                        asyncio.create_task(self._wait_and_send_resource(
+                            event, event.group_id, ticket_id, game, 
+                            english_keyword, chinese_display, user_id, user_nickname, 
+                            force_update=force_update
+                        ))
+                        return
+                
+                # 如果两种方式都失败，提示稍后重试
+                await event.reply(
+                    rtf=MessageArray([Reply(id=event.message_id), PlainText(text="❌ 系统正忙，请 10 秒后再次搜索重试。")])
+                )
+
         except Exception as e:
-            print(f"[Resource] Direct Mode error: {e}")
-            await event.reply(rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"处理失败: {str(e)}")]))
-            return
+            import traceback
+            print(f"[Resource] Processing exception: {e}")
+            traceback.print_exc()
+            await event.reply(
+                rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"处理失败: {str(e)}")])
+            )
 
-        # --- 以下为原逻辑（已注释，后续如需恢复请取消注释并删除上方直接发送逻辑） ---
-        # print(f"[Resource] Processing: {game['title']}, force_update: {force_update}")
-        # try:
-        #     # 获取处理后的名字和中文展示名
-        #     english_keyword, chinese_display = extract_english_name(game['title'])
-        #     print(f"[搜索关键词] 中文名: {chinese_display}, 英文名: {english_keyword}")
-        #
-        #     # 从 .env 读取配置
-        #     BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8979")
-        #     APP_ID = os.getenv("APP_ID", "card_sender")
-        #     APP_SECRET = os.getenv("APP_SECRET", "card_sender_secret")
-        #
-        #     async with httpx.AsyncClient() as client:
-        #         # 1. 优先请求“现成”的小程序码 (秒发模式)
-        #         response = await client.post(
-        #             f"{BACKEND_URL}/api/task/pop_ready",
-        #             json={
-        #                 "platform": "qq_id",
-        #                 "platform_id": str(event.user_id),
-        #                 "app_id": APP_ID,
-        #                 "resource_payload": f"游戏：{chinese_display}"
-        #             },
-        #             headers={"app-id": APP_ID, "app-secret": APP_SECRET},
-        #             timeout=20.0
-        #         )
-        #         
-        #         # 2. 如果池子空了 (503) 或报错，回退到实时生成模式
-        #         if response.status_code != 200:
-        #             print(f"[Resource] 池子暂无现成票据 (Code: {response.status_code})，回退到实时生成...")
-        #             response = await client.post(
-        #                 f"{BACKEND_URL}/api/task/create",
-        #                 json={
-        #                     "platform": "qq_id",
-        #                     "platform_id": str(event.user_id),
-        #                     "app_id": APP_ID,
-        #                     "resource_payload": {"game": chinese_display}
-        #                 },
-        #                 headers={"app-id": APP_ID, "app-secret": APP_SECRET},
-        #                 timeout=30.0
-        #             )
-        #         
-        #         if response.status_code == 200:
-        #             data = response.json()
-        #             ticket_id = data.get("ticket")
-        #             qrcode_url = data.get("qrcode_url")
-        #             
-        #             if ticket_id and qrcode_url:
-        #                 # 3. 发送小程序码图片 (针对本地 API URL 优化下载)
-        #                 if "/api/task/qrcode/" in qrcode_url or "/api/qrcode/" in qrcode_url:
-        #                     try:
-        #                         # 强制使用本地 BACKEND_URL 下载以避开 Nginx 404
-                                # download_url = f"{BACKEND_URL}/api/task/qrcode/{ticket_id}"
-                                # print(f"[Resource] 正在从本地下载二维码: {download_url}")
-                                # img_resp = await client.get(download_url, timeout=30.0)
-                                # if img_resp.status_code == 200:
-                                #     import base64
-                                #     img_b64 = f"base64://{base64.b64encode(img_resp.content).decode()}"
-                                #     await event.reply(image=img_b64)
-                                # else:
-                                #     print(f"[Resource] 本地下载失败 (Code: {img_resp.status_code})，回退到原始 URL")
-                                #     await event.reply(image=qrcode_url)
-        #                     except Exception as download_e:
-        #                         print(f"[Resource] 下载二维码异常: {download_e}")
-        #                         await event.reply(image=qrcode_url)
-        #                 else:
-        #                     # 外部 URL (如 Qiniu) 直接发送
-        #                     await event.reply(image=qrcode_url)
-        #                 
-        #                 # 4. 启动后台异步轮询任务 (预取内容 + 等待点击)
-        #                 user_id = str(event.user_id)
-        #                 user_nickname = event.sender.nickname
-        #                 
-        #                 asyncio.create_task(self._wait_and_send_resource(
-        #                     event, event.group_id, ticket_id, game, 
-        #                     english_keyword, chinese_display, user_id, user_nickname, 
-        #                     force_update=force_update
-        #                 ))
-        #                 return
-        #         
-        #         # 如果两种方式都失败，提示稍后重试
-        #         await event.reply(
-        #             rtf=MessageArray([Reply(id=event.message_id), PlainText(text="❌ 系统正忙，请 10 秒后再次搜索重试。")])
-        #         )
-        #
-        # except Exception as e:
-        #     import traceback
-        #     print(f"[Resource] Processing exception: {e}")
-        #     traceback.print_exc()
-        #     await event.reply(
-        #         rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"处理失败: {str(e)}")])
-        #     )
-
-
-    async def _wait_and_send_resource_OLD(self, event, group_id, ticket_id, game, english_keyword, chinese_display, user_id, user_nickname, force_update=False):
-        """【已停用】原有的轮询查询后端 Ticket 状态逻辑"""
-        pass # 原逻辑已在下方保留作为备份或完全注释
-        
     async def _wait_and_send_resource(self, event, group_id, ticket_id, game, english_keyword, chinese_display, user_id, user_nickname, force_update=False):
         """轮询查询后端 Ticket 状态，如果验证通过则获取并发送资源"""
-        # 原逻辑保留供参考，但主流程已跳过此函数
-        return
+        max_retries = 45  # 最大轮询次数，约 3 分钟
+        delay = 4         # 每次轮询间隔 4 秒
+        
+        # 告诉用户正在等待验证
+        await event.reply(
+            rtf=MessageArray([Reply(id=event.message_id), PlainText(text="✅ 请扫码在小程序内点击“修成正果”，完成后我将立即在此发送资源链接！")])
+        )
+        
+        # 预先检查一次数据库
+        db_games = await search_game_in_db(english_keyword)
+        
+        # 立即开始执行搜索抓取任务 (预取资源内容，不等用户点击)
+        print(f"[Pre-fetch] 正在立即执行搜索抓取任务: {chinese_display}")
+        pre_fetched_content = await self._get_resource_content(
+            game, english_keyword, chinese_display, 
+            force_update, db_games
+        )
+        
+        if pre_fetched_content:
+            print(f"[Pre-fetch] 资源抓取成功: {chinese_display}")
+        else:
+            print(f"[Pre-fetch] 资源抓取失败: {chinese_display}")
 
+        # 从 .env 读取配置
+        BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8978")
+        
+        for i in range(max_retries):
+            await asyncio.sleep(delay)
+            try:
+                # 核心修复：使用内部 BACKEND_URL 进行轮询，避免外部域名连接超时
+                query_url = f"{BACKEND_URL}/api/user/get_result?ticket={ticket_id}"
+                
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(query_url, timeout=5)
+                    response = resp.json()
+                
+                # 打印轮询状态便于调试
+                print(f"[Poll Ticket] Ticket: {ticket_id}, Status Response: {response}")
+                        
+                if response:
+                    # 针对后端多进程数据不同步的临时容错：遇到 404 不立即报错，继续轮询
+                    if isinstance(response, dict) and response.get("detail") == "记录不存在或已过期":
+                        print(f"⚠️ [Poll Warning] 遇到后端进程数据不同步(404)，正在等待重试...")
+                        continue
+
+                    status = response.get("status")
+                    # 只要状态是 verified 或 claimed，都视为验证通过
+                    if status in ["verified", "claimed"]:
+                        print(f"🎊 [Poll Success] Ticket {ticket_id} 验证通过, 状态: {status}")
+                        
+                        # 验证通过，立即发送预取的内容
+                        if pre_fetched_content:
+                            await self._send_final_forward(group_id, pre_fetched_content, user_id, user_nickname)
+                            # 给小程序也同步一个提示
+                            await event.reply(rtf=MessageArray([PlainText(text="🎉 验证成功！资源已在上方以合并转发形式发出，请查收。")]))
+                        else:
+                            # 如果预取失败，最后再尝试获取一次
+                            final_attempt = await self._get_resource_content(
+                                game, english_keyword, chinese_display, 
+                                force_update, db_games
+                            )
+                            if final_attempt:
+                                await self._send_final_forward(group_id, final_attempt, user_id, user_nickname)
+                                await event.reply(rtf=MessageArray([PlainText(text="🎉 验证成功！资源已在上方以合并转发形式发出，请查收。")]))
+                            else:
+                                await event.reply(rtf=MessageArray([PlainText(text="❌ 验证成功但资源获取失败，请联系管理员。")]))
+                        return
+            except Exception as e:
+                import traceback
+                error_details = traceback.format_exc()
+                print(f"[Poll Ticket] 轮询出错: {e}\n{error_details}")
+                
+        # 轮询超时
+        await event.reply(
+            rtf=MessageArray([Reply(id=event.message_id), PlainText(text="⏳ 验证超时，你好像还没看完广告哦。如果已看请重新搜索。")])
+        )
     
     async def _get_resource_content(self, game, english_keyword, chinese_display, force_update, db_games):
         """获取资源内容，优先从数据库获取，没有则从网站获取"""
@@ -1157,8 +1198,7 @@ class Xydj(NcatBotPlugin):
                 
                 # 创建会话并保存
                 session = SearchSession(event.user_id, games)
-                # 传入 session 对象本身用于校验
-                session.task = asyncio.create_task(self.countdown(event, event.group_id, session))
+                session.task = asyncio.create_task(self.countdown(event, event.group_id))
                 self.sessions[event.group_id] = session
                 
             except Exception as e:
