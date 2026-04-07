@@ -86,18 +86,31 @@ class Xydj(BasePlugin):
         self.http_client = httpx.AsyncClient(timeout=30)
 
     async def check_user_is_vip(self, user_id):
+        """检查用户VIP状态，返回 (is_vip, expired_at)"""
         try:
             url = f"{BACKEND_URL}/api/user/info?platform=qq_id&platform_id={user_id}"
             resp = await self.http_client.get(url, headers={"app-id": APP_ID, "app-secret": APP_SECRET})
             if resp.status_code == 200:
-                return resp.json().get("is_vip", False)
+                data = resp.json()
+                return data.get("is_vip", False), data.get("vip_expired_at")
         except Exception as e:
             logger.error(f"[VIP Check] 失败: {e}")
-        return False
+        return False, None
 
-    def _build_complete_game_content(self, game_data):
+    def _build_complete_game_content(self, game_data, vip_expired_at=None):
         """构建与群消息一致的排版内容"""
         content = []
+        if vip_expired_at:
+            try:
+                # 简单处理 ISO 格式日期 2026-04-07T12:00:00 -> 2026年04月07日
+                date_part = vip_expired_at.split('T')[0]
+                y, m, d = date_part.split('-')
+                content.append(f"✨ 当前为会员，有效期至：{y}年{m}月{d}日\n")
+                content.append("-" * 20 + "\n")
+            except:
+                content.append(f"✨ 当前为会员状态\n")
+                content.append("-" * 20 + "\n")
+
         zh_name = game_data.get("zh_name", game_data.get("name", "未知游戏"))
         content.append(f"游戏名字：{zh_name}\n")
         
@@ -138,8 +151,9 @@ class Xydj(BasePlugin):
         try:
             user_id = str(event.user_id)
             # 1. VIP 检查
-            if await self.check_user_is_vip(user_id):
-                content = self._build_complete_game_content(game["db_data"])
+            is_vip, vip_expired_at = await self.check_user_is_vip(user_id)
+            if is_vip:
+                content = self._build_complete_game_content(game["db_data"], vip_expired_at)
                 await self._send_final_forward(event.group_id, content, user_id, event.sender.nickname)
                 return
 
