@@ -270,8 +270,8 @@ class Xydj(NcatBotPlugin):
         password = data.get('password')
         if password: lines.append(f"解压密码: 【{password}】")
             
-        platforms = [("baidu", "百度"), ("quark", "夸克"), ("uc", "UC"), ("online", "在线"), 
-                     ("pan123", "123"), ("mobile", "移动"), ("tianyi", "天翼"), ("xunlei", "迅雷")]
+        platforms = [("baidu", "百度"), ("quark", "夸克"), ("uc", "UC"), ("online", "联机版"), 
+                     ("pan123", "123"), ("mobile", "移动"), ("tianyi", "天翼"), ("xunlei", "迅雷"), ("patch", "联机补丁")]
         
         # 尝试从字段构建
         found_any = False

@@ -186,12 +186,12 @@ class XydjDbSearch(NcatBotPlugin):
                 pan_links.append(f"移动端提取码：【{game_data['mobile_code']}】")
         
         if game_data.get("online_url"):
-            pan_links.append(f"在线：{game_data['online_url']}")
+            pan_links.append(f"联机版：{game_data['online_url']}")
             if game_data.get("online_code"):
-                pan_links.append(f"在线提取码：【{game_data['online_code']}】")
+                pan_links.append(f"联机版提取码：【{game_data['online_code']}】")
         
         if game_data.get("patch_url"):
-            pan_links.append(f"补丁：{game_data['patch_url']}")
+            pan_links.append(f"联机补丁：{game_data['patch_url']}")
         
         for link in pan_links:
             content.append(f"{link}\n")

@@ -78,7 +78,7 @@ async def save_game_to_db(keyword: str, game: dict, detail_info: list = None, we
                     if match:
                         decompress_password = match.group(1)
 
-                pan_code_match = re.search(r'(百度网盘|夸克网盘|UC网盘)提取码[:：]\s*【([^】]+)】', line)
+                pan_code_match = re.search(r'(百度网盘|夸克网盘|UC网盘|联机版|联机补丁)提取码[:：]\s*【([^】]+)】', line)
                 if pan_code_match:
                     pan_name = pan_code_match.group(1)
                     pan_code = pan_code_match.group(2)
@@ -86,7 +86,7 @@ async def save_game_to_db(keyword: str, game: dict, detail_info: list = None, we
                         pan_links[pan_name] = {}
                     pan_links[pan_name]["code"] = pan_code
 
-                pan_url_match = re.search(r'(百度网盘|夸克网盘|UC网盘)[:：]\s*(https?://\S+)', line)
+                pan_url_match = re.search(r'(百度网盘|夸克网盘|UC网盘|联机版|联机补丁)[:：]\s*(https?://\S+)', line)
                 if pan_url_match:
                     pan_name = pan_url_match.group(1)
                     pan_url = pan_url_match.group(2)
@@ -104,6 +104,8 @@ async def save_game_to_db(keyword: str, game: dict, detail_info: list = None, we
             "百度网盘": "baidu",
             "夸克网盘": "quark",
             "UC网盘": "uc",
+            "联机版": "online",
+            "联机补丁": "patch",
         }
 
         for pan_name, pan_info in pan_links.items():
@@ -223,12 +225,21 @@ async def extract_download_info(game_url: str, skip_cache: bool = False):
                         if pwd_match:
                             pwd_code = pwd_match.group(1)
                 
-                if pan_link and pan_name and any(keyword in pan_name for keyword in ['百度', '夸克', 'UC']):
-                    pan_cards.append({
-                        "name": pan_name,
-                        "link": pan_link,
-                        "code": pwd_code
-                    })
+                if pan_link and pan_name:
+                     # 统一资源显示名称
+                     if pan_name == "在线":
+                         display_name = "联机版"
+                     elif "补丁" in pan_name:
+                         display_name = "联机补丁"
+                     else:
+                         display_name = pan_name
+                     
+                     if any(keyword in pan_name for keyword in ['百度', '夸克', 'UC', '在线', '补丁']):
+                         pan_cards.append({
+                             "name": display_name,
+                             "link": pan_link,
+                             "code": pwd_code
+                         })
             
             if password_val:
                 results.append(f"解压密码: 【{password_val}】")

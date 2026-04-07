@@ -42,16 +42,33 @@ APP_ID = os.getenv("APP_ID", "card_sender")
 APP_SECRET = os.getenv("APP_SECRET", "card_sender_secret")
 
 async def search_game_from_db(game_name: str):
-    """从数据库搜索游戏（模糊匹配中英文）"""
+    """从数据库搜索游戏（模糊匹配中英文，且必须有下载链接）"""
     print(f"[DB Search] 正在从数据库搜索: {game_name}")
     try:
         cloud_games = await db_permission_manager.search_game_resources(game_name)
         if not cloud_games:
-            return None, None
+            return "暂未收录", None
         
         text_lines = []
         games = []
-        for idx, game_data in enumerate(cloud_games):
+        
+        # 过滤必须有下载链接的游戏
+        valid_cloud_games = []
+        url_fields = [
+            "baidu_url", "quark_url", "uc_url", "pan123_url", 
+            "xunlei_url", "mobile_url", "online_url", "patch_url"
+        ]
+        
+        for g_data in cloud_games:
+            has_link = any(g_data.get(f) for f in url_fields)
+            if has_link:
+                valid_cloud_games.append(g_data)
+        
+        if not valid_cloud_games:
+            # 虽然找到了名字匹配的，但都没有链接，也返回提示
+            return "暂未收录", None
+
+        for idx, game_data in enumerate(valid_cloud_games):
             zh_name = game_data.get("zh_name", game_data.get("name", ""))
             en_name = game_data.get("en_name", "")
             display_text = f"{idx+1}. {zh_name}"
@@ -66,14 +83,15 @@ async def search_game_from_db(game_name: str):
         return "\n\n".join(text_lines), games
     except Exception as e:
         logger.error(f"[DB Search] 搜索失败: {e}")
-        return None, None
+        return "搜索服务异常，请稍后再试", None
 
 class SearchSession:
-    def __init__(self, user_id, games, task=None):
+    def __init__(self, user_id, games, task=None, original_msg_id=None):
         self.user_id = user_id
         self.games = games
         self.task = task
         self.processing = False
+        self.original_msg_id = original_msg_id
 
 class Xydj(BasePlugin):
     name = "xydj"
@@ -97,20 +115,9 @@ class Xydj(BasePlugin):
             logger.error(f"[VIP Check] 失败: {e}")
         return False, None
 
-    def _build_complete_game_content(self, game_data, vip_expired_at=None):
+    def _build_complete_game_content(self, game_data):
         """构建与群消息一致的排版内容"""
         content = []
-        if vip_expired_at:
-            try:
-                # 简单处理 ISO 格式日期 2026-04-07T12:00:00 -> 2026年04月07日
-                date_part = vip_expired_at.split('T')[0]
-                y, m, d = date_part.split('-')
-                content.append(f"✨ 当前为会员，有效期至：{y}年{m}月{d}日\n")
-                content.append("-" * 20 + "\n")
-            except:
-                content.append(f"✨ 当前为会员状态\n")
-                content.append("-" * 20 + "\n")
-
         zh_name = game_data.get("zh_name", game_data.get("name", "未知游戏"))
         content.append(f"游戏名字：{zh_name}\n")
         
@@ -124,7 +131,8 @@ class Xydj(BasePlugin):
             ("pan123_url", "123网盘", "pan123_code"),
             ("xunlei_url", "迅雷网盘", "xunlei_code"),
             ("mobile_url", "移动端", "mobile_code"),
-            ("online_url", "在线", "online_code")
+            ("online_url", "联机版", "online_code"),
+            ("patch_url", "联机补丁", "")
         ]
         
         for key, name, code_key in pans:
@@ -147,13 +155,29 @@ class Xydj(BasePlugin):
             logger.error(f"合并转发失败: {e}")
             return False
 
-    async def process_game_resource(self, game, event):
+    async def process_game_resource(self, game, event, original_msg_id=None):
         try:
             user_id = str(event.user_id)
             # 1. VIP 检查
             is_vip, vip_expired_at = await self.check_user_is_vip(user_id)
             if is_vip:
-                content = self._build_complete_game_content(game["db_data"], vip_expired_at)
+                # 1. 单独发送会员提示 (引用但不@)
+                try:
+                    date_part = vip_expired_at.split('T')[0]
+                    y, m, d = date_part.split('-')
+                    tip = f"当前为会员，有效期至：{y}年{m}月{d}日"
+                except:
+                    tip = "当前为会员状态"
+                
+                # 使用 post_group_msg 配合 MessageArray 发送引用但不 @ 的消息
+                msg_id = original_msg_id or event.message_id
+                await self.api.qq.post_group_msg(
+                    group_id=event.group_id,
+                    rtf=MessageArray([Reply(id=msg_id), PlainText(text=tip)])
+                )
+                
+                # 2. 发送资源消息 (合并转发)
+                content = self._build_complete_game_content(game["db_data"])
                 await self._send_final_forward(event.group_id, content, user_id, event.sender.nickname)
                 return
 
@@ -259,8 +283,9 @@ class Xydj(BasePlugin):
                 return
             if msg.isdigit() and 1 <= int(msg) <= len(session.games):
                 game = session.games[int(msg)-1]
+                original_msg_id = session.original_msg_id
                 self._cleanup(event.group_id)
-                await self.process_game_resource(game, event)
+                await self.process_game_resource(game, event, original_msg_id=original_msg_id)
                 return
 
         # 2. 处理搜索命令
@@ -270,14 +295,20 @@ class Xydj(BasePlugin):
             
             text_result, games = await search_game_from_db(game_name)
             if not games:
-                await event.reply("数据库未找到该资源")
+                # 使用 post_group_msg 配合 MessageArray 发送引用但不 @ 的消息，避免 event.reply 产生重复的 @
+                await self.api.qq.post_group_msg(
+                    group_id=event.group_id,
+                    rtf=MessageArray([Reply(id=event.message_id), PlainText(text=text_result)])
+                )
                 return
             
             if len(games) == 1:
-                await self.process_game_resource(games[0], event)
-            else:
+                await self.process_game_resource(games[0], event, original_msg_id=event.message_id)
+                return
+            
+            if len(games) > 1:
                 await event.reply(rtf=MessageArray([PlainText(text=f"🎯 发现 {len(games)} 款游戏\n{text_result}\n⏰ 20秒内回复序号选择 | 回复 0 取消")]))
-                session = SearchSession(event.user_id, games)
+                session = SearchSession(event.user_id, games, original_msg_id=event.message_id)
                 session.task = asyncio.create_task(self.countdown(event, event.group_id))
                 self.sessions[event.group_id] = session
 
