@@ -75,7 +75,13 @@ class TursoResourceManager:
         await self._execute_sql("""
             CREATE TABLE IF NOT EXISTS game_resources (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL,
+                platform TEXT,
+                genre TEXT,
+                zh_name TEXT UNIQUE NOT NULL,
+                en_name TEXT,
+                image_url TEXT,
+                version TEXT,
+                details TEXT,
                 password TEXT,
                 baidu_url TEXT,
                 baidu_code TEXT,
@@ -85,9 +91,18 @@ class TursoResourceManager:
                 uc_code TEXT,
                 online_url TEXT,
                 online_code TEXT,
-                web_updated_at TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                patch_url TEXT,
+                online_at TEXT,
+                detail_url TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                pan123_url TEXT,
+                pan123_code TEXT,
+                mobile_url TEXT,
+                mobile_code TEXT,
+                tianyi_url TEXT,
+                tianyi_code TEXT,
+                xunlei_url TEXT,
+                xunlei_code TEXT
             )
         """)
 
@@ -96,6 +111,7 @@ class TursoResourceManager:
             CREATE TABLE IF NOT EXISTS ntqq_key (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 xydj TEXT,
+                app_id TEXT,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -118,39 +134,6 @@ class TursoResourceManager:
                 logger.info("[DB Resource] 初始化 key 表完成")
         except Exception as e:
             logger.warning(f"[DB Resource] 初始化 key 表失败: {e}")
-
-    async def _add_game_resource_columns(self):
-        """添加游戏资源表缺失的字段"""
-        try:
-            # 获取现有字段
-            result = await self._query("PRAGMA table_info(game_resources)")
-            existing_columns = {row[1] for row in result} if result else set()
-
-            # 需要添加的新字段（网盘相关）
-            required_columns = {
-                "xydj_baidu_url": "TEXT",
-                "xydj_baidu_code": "TEXT",
-                "xydj_quark_url": "TEXT",
-                "xydj_quark_code": "TEXT",
-                "xydj_tianyi_url": "TEXT",
-                "xydj_tianyi_code": "TEXT",
-                "xydj_aliyun_url": "TEXT",
-                "xydj_aliyun_code": "TEXT",
-                "xydj_xunlei_url": "TEXT",
-                "xydj_xunlei_code": "TEXT",
-                "xydj_uc_url": "TEXT",
-                "xydj_uc_code": "TEXT",
-                "xydj_pan115_url": "TEXT",
-                "xydj_pan115_code": "TEXT",
-            }
-
-            for column, dtype in required_columns.items():
-                if column not in existing_columns:
-                    logger.info(f"[DB Resource] 添加游戏资源表字段: {column}")
-                    await self._execute(f"ALTER TABLE game_resources ADD COLUMN {column} {dtype}")
-
-        except Exception as e:
-            logger.warning(f"[DB Resource] 添加游戏资源表字段失败: {e}")
 
     def _init_local_storage(self):
         """初始化本地存储（回退模式）"""
@@ -183,7 +166,13 @@ class TursoResourceManager:
         self._local_cursor.execute("""
             CREATE TABLE IF NOT EXISTS game_resources (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL,
+                platform TEXT,
+                genre TEXT,
+                zh_name TEXT UNIQUE NOT NULL,
+                en_name TEXT,
+                image_url TEXT,
+                version TEXT,
+                details TEXT,
                 password TEXT,
                 baidu_url TEXT,
                 baidu_code TEXT,
@@ -193,9 +182,18 @@ class TursoResourceManager:
                 uc_code TEXT,
                 online_url TEXT,
                 online_code TEXT,
-                web_updated_at TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                patch_url TEXT,
+                online_at TEXT,
+                detail_url TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                pan123_url TEXT,
+                pan123_code TEXT,
+                mobile_url TEXT,
+                mobile_code TEXT,
+                tianyi_url TEXT,
+                tianyi_code TEXT,
+                xunlei_url TEXT,
+                xunlei_code TEXT
             )
         """)
 
@@ -204,6 +202,7 @@ class TursoResourceManager:
             CREATE TABLE IF NOT EXISTS ntqq_key (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 xydj TEXT,
+                app_id TEXT,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -219,41 +218,6 @@ class TursoResourceManager:
         self._local_conn.commit()
 
         logger.info("[DB Resource] 本地 SQLite 数据库初始化完成")
-
-    def _add_game_resource_columns_local(self):
-        """本地模式：添加游戏资源表缺失的字段"""
-        try:
-            # 获取现有字段
-            self._local_cursor.execute("PRAGMA table_info(game_resources)")
-            result = self._local_cursor.fetchall()
-            existing_columns = {row[1] for row in result}
-
-            # 需要添加的新字段（网盘相关）
-            required_columns = {
-                "xydj_baidu_url": "TEXT",
-                "xydj_baidu_code": "TEXT",
-                "xydj_quark_url": "TEXT",
-                "xydj_quark_code": "TEXT",
-                "xydj_tianyi_url": "TEXT",
-                "xydj_tianyi_code": "TEXT",
-                "xydj_aliyun_url": "TEXT",
-                "xydj_aliyun_code": "TEXT",
-                "xydj_xunlei_url": "TEXT",
-                "xydj_xunlei_code": "TEXT",
-                "xydj_uc_url": "TEXT",
-                "xydj_uc_code": "TEXT",
-                "xydj_pan115_url": "TEXT",
-                "xydj_pan115_code": "TEXT",
-            }
-
-            for column, dtype in required_columns.items():
-                if column not in existing_columns:
-                    logger.info(f"[DB Resource] 本地模式添加游戏资源表字段: {column}")
-                    self._local_cursor.execute(f"ALTER TABLE game_resources ADD COLUMN {column} {dtype}")
-                    self._local_conn.commit()
-
-        except Exception as e:
-            logger.warning(f"[DB Resource] 本地模式添加游戏资源表字段失败: {e}")
 
     async def _execute_sql(self, sql: str, args: list = None):
         """执行 SQL 语句 (Turso HTTP API)"""
@@ -639,13 +603,12 @@ class TursoResourceManager:
         await self.initialize()
 
         sql = """
-            SELECT id, name, password,
-                   baidu_url, baidu_code,
-                   quark_url, quark_code,
-                   uc_url, uc_code,
-                   online_url, online_code,
-                   web_updated_at, created_at, updated_at
-            FROM game_resources WHERE name = ?
+            SELECT id, platform, genre, zh_name, en_name, image_url, version, details, 
+                   password, baidu_url, baidu_code, quark_url, quark_code, uc_url, uc_code,
+                   online_url, online_code, patch_url, online_at, detail_url, updated_at,
+                   pan123_url, pan123_code, mobile_url, mobile_code, tianyi_url, tianyi_code,
+                   xunlei_url, xunlei_code
+            FROM game_resources WHERE zh_name = ?
         """
 
         if self._local_mode:
@@ -658,19 +621,34 @@ class TursoResourceManager:
         if row:
             return {
                 "id": row[0],
-                "name": row[1],
-                "password": row[2],
-                "baidu_url": row[3],
-                "baidu_code": row[4],
-                "quark_url": row[5],
-                "quark_code": row[6],
-                "uc_url": row[7],
-                "uc_code": row[8],
-                "online_url": row[9],
-                "online_code": row[10],
-                "web_updated_at": row[11],
-                "created_at": row[12],
-                "updated_at": row[13]
+                "platform": row[1],
+                "genre": row[2],
+                "zh_name": row[3],
+                "en_name": row[4],
+                "image_url": row[5],
+                "version": row[6],
+                "details": row[7],
+                "password": row[8],
+                "baidu_url": row[9],
+                "baidu_code": row[10],
+                "quark_url": row[11],
+                "quark_code": row[12],
+                "uc_url": row[13],
+                "uc_code": row[14],
+                "online_url": row[15],
+                "online_code": row[16],
+                "patch_url": row[17],
+                "online_at": row[18],
+                "detail_url": row[19],
+                "updated_at": row[20],
+                "pan123_url": row[21],
+                "pan123_code": row[22],
+                "mobile_url": row[23],
+                "mobile_code": row[24],
+                "tianyi_url": row[25],
+                "tianyi_code": row[26],
+                "xunlei_url": row[27],
+                "xunlei_code": row[28]
             }
         return None
 
@@ -688,47 +666,77 @@ class TursoResourceManager:
 
         now = datetime.now().isoformat()
 
-        # 构建动态SQL，只更新传入的字段
-        fields = ['name', 'updated_at']
-        values = [name, now]
-        update_sets = []
-
-        # 定义所有可能的字段
+        # 定义所有可能的字段 (对应云端数据库字段)
         all_fields = [
-            'password',
-            'baidu_url', 'baidu_code',
-            'quark_url', 'quark_code',
-            'uc_url', 'uc_code',
-            'online_url', 'online_code',
-            'web_updated_at',
+            'platform', 'genre', 'en_name', 'image_url', 'version', 'details',
+            'password', 'baidu_url', 'baidu_code', 'quark_url', 'quark_code',
+            'uc_url', 'uc_code', 'online_url', 'online_code', 'patch_url',
+            'online_at', 'detail_url', 'pan123_url', 'pan123_code',
+            'mobile_url', 'mobile_code', 'tianyi_url', 'tianyi_code',
+            'xunlei_url', 'xunlei_code'
         ]
-
-        for field in all_fields:
-            if field in data:
-                fields.append(field)
-                values.append(data.get(field))
-                update_sets.append(f"{field} = excluded.{field}")
-
-        # 如果没有额外字段，至少更新 updated_at
-        if not update_sets:
-            update_sets.append("updated_at = excluded.updated_at")
-
-        fields_str = ', '.join(fields)
-        placeholders = ', '.join(['?' for _ in values])
-        update_str = ', '.join(update_sets)
-
-        sql = f"""
-            INSERT INTO game_resources ({fields_str})
-            VALUES ({placeholders})
-            ON CONFLICT(name) DO UPDATE SET
-                {update_str}
-        """
 
         try:
             if self._local_mode:
-                self._local_cursor.execute(sql, values)
+                # 本地 SQLite 模式：先检查是否存在，存在则更新，不存在则插入
+                self._local_cursor.execute("SELECT id FROM game_resources WHERE zh_name = ?", (name,))
+                existing = self._local_cursor.fetchone()
+                
+                if existing:
+                    # 更新现有记录
+                    update_fields = []
+                    update_values = []
+                    for field in all_fields:
+                        if field in data:
+                            update_fields.append(f"{field} = ?")
+                            update_values.append(data.get(field))
+                    update_fields.append("updated_at = ?")
+                    update_values.append(now)
+                    update_values.append(name)  # WHERE 条件
+                    
+                    sql = f"UPDATE game_resources SET {', '.join(update_fields)} WHERE zh_name = ?"
+                    self._local_cursor.execute(sql, update_values)
+                else:
+                    # 插入新记录
+                    insert_fields = ['zh_name', 'updated_at']
+                    insert_values = [name, now]
+                    for field in all_fields:
+                        if field in data:
+                            insert_fields.append(field)
+                            insert_values.append(data.get(field))
+                    
+                    placeholders = ', '.join(['?' for _ in insert_values])
+                    sql = f"INSERT INTO game_resources ({', '.join(insert_fields)}) VALUES ({placeholders})"
+                    self._local_cursor.execute(sql, insert_values)
+                
                 self._local_conn.commit()
             else:
+                # Turso 模式：使用 ON CONFLICT
+                # 构建动态SQL，只更新传入的字段
+                fields = ['zh_name', 'updated_at']
+                values = [name, now]
+                update_sets = []
+
+                for field in all_fields:
+                    if field in data:
+                        fields.append(field)
+                        values.append(data.get(field))
+                        update_sets.append(f"{field} = excluded.{field}")
+
+                # 如果没有额外字段，至少更新 updated_at
+                if not update_sets:
+                    update_sets.append("updated_at = excluded.updated_at")
+
+                fields_str = ', '.join(fields)
+                placeholders = ', '.join(['?' for _ in values])
+                update_str = ', '.join(update_sets)
+
+                sql = f"""
+                    INSERT INTO game_resources ({fields_str})
+                    VALUES ({placeholders})
+                    ON CONFLICT(zh_name) DO UPDATE SET
+                        {update_str}
+                """
                 await self._execute(sql, values)
 
             logger.info(f"[DB Game] 保存游戏资源: {name}, 字段: {[f for f in all_fields if f in data]}")
@@ -748,7 +756,7 @@ class TursoResourceManager:
         """
         await self.initialize()
 
-        sql = "DELETE FROM game_resources WHERE name = ?"
+        sql = "DELETE FROM game_resources WHERE zh_name = ?"
 
         try:
             if self._local_mode:
@@ -776,14 +784,13 @@ class TursoResourceManager:
         await self.initialize()
 
         sql = """
-            SELECT id, name, password,
-                   baidu_url, baidu_code,
-                   quark_url, quark_code,
-                   uc_url, uc_code,
-                   online_url, online_code,
-                   web_updated_at, created_at, updated_at
+            SELECT id, platform, genre, zh_name, en_name, image_url, version, details, 
+                   password, baidu_url, baidu_code, quark_url, quark_code, uc_url, uc_code,
+                   online_url, online_code, patch_url, online_at, detail_url, updated_at,
+                   pan123_url, pan123_code, mobile_url, mobile_code, tianyi_url, tianyi_code,
+                   xunlei_url, xunlei_code
             FROM game_resources
-            WHERE name LIKE ?
+            WHERE zh_name LIKE ? OR en_name LIKE ?
             ORDER BY updated_at DESC
             LIMIT ?
         """
@@ -791,28 +798,43 @@ class TursoResourceManager:
         search_pattern = f"%{keyword}%"
 
         if self._local_mode:
-            self._local_cursor.execute(sql, (search_pattern, limit))
+            self._local_cursor.execute(sql, (search_pattern, search_pattern, limit))
             rows = self._local_cursor.fetchall()
         else:
-            rows = await self._query(sql, (search_pattern, limit))
+            rows = await self._query(sql, (search_pattern, search_pattern, limit))
 
         games = []
         for row in rows:
             games.append({
                 "id": row[0],
-                "name": row[1],
-                "password": row[2],
-                "baidu_url": row[3],
-                "baidu_code": row[4],
-                "quark_url": row[5],
-                "quark_code": row[6],
-                "uc_url": row[7],
-                "uc_code": row[8],
-                "online_url": row[9],
-                "online_code": row[10],
-                "web_updated_at": row[11],
-                "created_at": row[12],
-                "updated_at": row[13]
+                "platform": row[1],
+                "genre": row[2],
+                "zh_name": row[3],
+                "en_name": row[4],
+                "image_url": row[5],
+                "version": row[6],
+                "details": row[7],
+                "password": row[8],
+                "baidu_url": row[9],
+                "baidu_code": row[10],
+                "quark_url": row[11],
+                "quark_code": row[12],
+                "uc_url": row[13],
+                "uc_code": row[14],
+                "online_url": row[15],
+                "online_code": row[16],
+                "patch_url": row[17],
+                "online_at": row[18],
+                "detail_url": row[19],
+                "updated_at": row[20],
+                "pan123_url": row[21],
+                "pan123_code": row[22],
+                "mobile_url": row[23],
+                "mobile_code": row[24],
+                "tianyi_url": row[25],
+                "tianyi_code": row[26],
+                "xunlei_url": row[27],
+                "xunlei_code": row[28]
             })
 
         return games

@@ -914,25 +914,22 @@ class Xydj(NcatBotPlugin):
                     qrcode_url = data.get("qrcode_url")
                     
                     if ticket_id and qrcode_url:
-                        # 3. 发送小程序码图片 (针对本地 API URL 优化下载)
-                        if "/api/task/qrcode/" in qrcode_url or "/api/qrcode/" in qrcode_url:
-                            try:
-                                # 强制使用本地 BACKEND_URL 下载以避开 Nginx 404
-                                download_url = f"{BACKEND_URL}/api/task/qrcode/{ticket_id}"
-                                print(f"[Resource] 正在从本地下载二维码: {download_url}")
-                                img_resp = await client.get(download_url, timeout=30.0)
-                                if img_resp.status_code == 200:
-                                    import base64
-                                    img_b64 = f"base64://{base64.b64encode(img_resp.content).decode()}"
-                                    await event.reply(image=img_b64)
-                                else:
-                                    print(f"[Resource] 本地下载失败 (Code: {img_resp.status_code})，回退到原始 URL")
-                                    await event.reply(image=qrcode_url)
-                            except Exception as download_e:
-                                print(f"[Resource] 下载二维码异常: {download_e}")
+                        # 3. 发送小程序码图片 (强制通过后端本地代理下载，统一转换为 base64 发送)
+                        try:
+                            download_url = f"{BACKEND_URL}/api/task/qrcode/{ticket_id}"
+                            
+                            print(f"[Resource] 正在从本地代理下载二维码: {download_url}")
+                            img_resp = await client.get(download_url, timeout=15.0)
+                            if img_resp.status_code == 200:
+                                import base64
+                                img_b64 = f"base64://{base64.b64encode(img_resp.content).decode()}"
+                                print(f"[Resource] 二维码代理下载并转换为 base64 成功")
+                                await event.reply(image=img_b64)
+                            else:
+                                print(f"[Resource] 代理下载失败 (Code: {img_resp.status_code})，尝试原始 URL")
                                 await event.reply(image=qrcode_url)
-                        else:
-                            # 外部 URL (如 Qiniu) 直接发送
+                        except Exception as download_e:
+                            print(f"[Resource] 代理下载异常: {download_e}")
                             await event.reply(image=qrcode_url)
                         
                         # 4. 启动后台异步轮询任务 (预取内容 + 等待点击)
