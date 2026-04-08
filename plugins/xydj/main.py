@@ -230,7 +230,7 @@ class Xydj(BasePlugin):
                     logger.error(f"下载二维码异常: {e}")
                     msg_parts.append(Image(file=qrcode_url))
 
-                msg_parts.append(PlainText(text="\n✅ 请扫码在小程序内点击“点击获取”，完成后我将立即在此发送资源链接！"))
+                msg_parts.append(PlainText(text="\n✅ 请长按扫码点击“点击获取”，完成后我将立即在此发送资源链接！QQ内长按二维码也是可以的"))
                 
                 try:
                     await event.reply(rtf=MessageArray(msg_parts))

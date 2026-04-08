@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../../../../www/wwwroot/WxTool"
+		},
+		{
+			"path": "../../../../www/wwwroot/Game-crawler"
+		},
+		{
+			"path": "."
+		}
+	],
+	"settings": {}
+}
