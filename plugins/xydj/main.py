@@ -165,9 +165,9 @@ class Xydj(BasePlugin):
                 try:
                     date_part = vip_expired_at.split('T')[0]
                     y, m, d = date_part.split('-')
-                    tip = f"当前为会员，有效期至：{y}年{m}月{d}日"
+                    tip = f"当前为赞助，有效期至：{y}年{m}月{d}日"
                 except:
-                    tip = "当前为会员状态"
+                    tip = "当前为赞助状态"
                 
                 # 使用 post_group_msg 配合 MessageArray 发送引用但不 @ 的消息
                 msg_id = original_msg_id or event.message_id
