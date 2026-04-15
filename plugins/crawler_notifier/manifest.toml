@@ -1,0 +1,10 @@
+name = "crawler_notifier"
+version = "1.0.0"
+main = "main.py"
+entry_class = "CrawlerNotifierPlugin"
+author = "Trae"
+description = "爬虫任务结束通知插件，监控 crawler_status.json 并发送 QQ 消息"
+
+[dependencies]
+
+[pip_dependencies]

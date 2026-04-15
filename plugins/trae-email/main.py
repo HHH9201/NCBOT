@@ -44,17 +44,28 @@ class TraeEmailManager:
 
     async def _init_tables(self):
         """初始化数据库表"""
+        # 1. 初始化主表
         await self._execute_sql("""
             CREATE TABLE IF NOT EXISTS email_accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT UNIQUE NOT NULL,
-                key TEXT NOT NULL,
-                is_assigned INTEGER DEFAULT 0,
-                assigned_to TEXT,
-                assigned_at TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                account TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                status TEXT DEFAULT 'available',
+                qq_id TEXT,
+                used_at DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        
+        # 2. 检查并添加 qq_id 字段 (针对已存在的表)
+        try:
+            await self._execute_sql("ALTER TABLE email_accounts ADD COLUMN qq_id TEXT")
+            logger.info("[TraeEmail] 已为 email_accounts 添加 qq_id 字段")
+        except Exception as e:
+            if "duplicate column name" in str(e).lower() or "already exists" in str(e).lower():
+                pass
+            else:
+                logger.error(f"[TraeEmail] 检查 qq_id 字段失败: {e}")
 
     async def _execute_sql(self, sql: str, args: list = None):
         """执行 SQL 语句 (Turso HTTP API)"""
@@ -74,6 +85,8 @@ class TraeEmailManager:
                 params.append({"type": "integer", "value": str(arg)})
             elif isinstance(arg, str):
                 params.append({"type": "text", "value": arg})
+            elif arg is None:
+                params.append({"type": "null"})
             else:
                 params.append({"type": "text", "value": str(arg)})
 
@@ -135,9 +148,9 @@ class TraeEmailManager:
         await self.initialize()
 
         sql = """
-            SELECT id, email, key 
+            SELECT id, account, password 
             FROM email_accounts 
-            WHERE is_assigned = 0 
+            WHERE status = 'available' 
             ORDER BY id ASC 
             LIMIT 1
         """
@@ -156,18 +169,18 @@ class TraeEmailManager:
         await self.initialize()
 
         from datetime import datetime
-        now = datetime.now().isoformat()
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         sql = """
             UPDATE email_accounts 
-            SET is_assigned = 1, 
-                assigned_to = ?, 
-                assigned_at = ? 
+            SET status = 'used', 
+                used_at = ?,
+                qq_id = ?
             WHERE id = ?
         """
 
         try:
-            await self._execute_sql(sql, [user_id, now, account_id])
+            await self._execute_sql(sql, [now, user_id, account_id])
             logger.info(f"[TraeEmail] 账号 {account_id} 已分配给用户 {user_id}")
             return True
         except Exception as e:
@@ -179,13 +192,13 @@ class TraeEmailManager:
         await self.initialize()
 
         sql = """
-            INSERT INTO email_accounts (email, key, is_assigned) 
-            VALUES (?, ?, 0)
-            ON CONFLICT(email) DO UPDATE SET
-                key = excluded.key,
-                is_assigned = 0,
-                assigned_to = NULL,
-                assigned_at = NULL
+            INSERT INTO email_accounts (account, password, status) 
+            VALUES (?, ?, 'available')
+            ON CONFLICT(account) DO UPDATE SET
+                password = excluded.password,
+                status = 'available',
+                used_at = NULL,
+                qq_id = NULL
         """
 
         try:
@@ -201,8 +214,8 @@ class TraeEmailManager:
         await self.initialize()
 
         total_sql = "SELECT COUNT(*) FROM email_accounts"
-        assigned_sql = "SELECT COUNT(*) FROM email_accounts WHERE is_assigned = 1"
-        unassigned_sql = "SELECT COUNT(*) FROM email_accounts WHERE is_assigned = 0"
+        assigned_sql = "SELECT COUNT(*) FROM email_accounts WHERE status = 'used'"
+        unassigned_sql = "SELECT COUNT(*) FROM email_accounts WHERE status = 'available'"
 
         total_result = await self._query_sql(total_sql)
         assigned_result = await self._query_sql(assigned_sql)
@@ -217,7 +230,7 @@ class TraeEmailManager:
     async def get_unassigned_count(self) -> int:
         """获取未分配账号数量"""
         await self.initialize()
-        unassigned_sql = "SELECT COUNT(*) FROM email_accounts WHERE is_assigned = 0"
+        unassigned_sql = "SELECT COUNT(*) FROM email_accounts WHERE status = 'available'"
         result = await self._query_sql(unassigned_sql)
         return result[0][0] if result else 0
 

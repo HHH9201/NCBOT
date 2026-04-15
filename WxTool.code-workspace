@@ -8,6 +8,12 @@
 		},
 		{
 			"path": "."
+		},
+		{
+			"path": "../../../../www/wwwroot/trae_docker"
+		},
+		{
+			"path": "../clash"
 		}
 	],
 	"settings": {}

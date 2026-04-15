@@ -677,12 +677,21 @@ class TursoResourceManager:
         ]
 
         try:
+            # 优先根据 detail_url 查找，因为它是唯一的资源标识符
+            detail_url = data.get('detail_url')
+            existing = None
+            
             if self._local_mode:
-                # 本地 SQLite 模式：先检查是否存在，存在则更新，不存在则插入
-                self._local_cursor.execute("SELECT id FROM game_resources WHERE zh_name = ?", (name,))
-                existing = self._local_cursor.fetchone()
+                if detail_url:
+                    self._local_cursor.execute("SELECT id, zh_name FROM game_resources WHERE detail_url = ?", (detail_url,))
+                    existing = self._local_cursor.fetchone()
+                
+                if not existing:
+                    self._local_cursor.execute("SELECT id, zh_name FROM game_resources WHERE zh_name = ?", (name,))
+                    existing = self._local_cursor.fetchone()
                 
                 if existing:
+                    resource_id, db_zh_name = existing
                     # 更新现有记录
                     update_fields = []
                     update_values = []
@@ -692,9 +701,9 @@ class TursoResourceManager:
                             update_values.append(data.get(field))
                     update_fields.append("updated_at = ?")
                     update_values.append(now)
-                    update_values.append(name)  # WHERE 条件
+                    update_values.append(resource_id)  # WHERE 条件
                     
-                    sql = f"UPDATE game_resources SET {', '.join(update_fields)} WHERE zh_name = ?"
+                    sql = f"UPDATE game_resources SET {', '.join(update_fields)} WHERE id = ?"
                     self._local_cursor.execute(sql, update_values)
                 else:
                     # 插入新记录
@@ -711,35 +720,45 @@ class TursoResourceManager:
                 
                 self._local_conn.commit()
             else:
-                # Turso 模式：使用 ON CONFLICT
-                # 构建动态SQL，只更新传入的字段
-                fields = ['zh_name', 'updated_at']
-                values = [name, now]
-                update_sets = []
+                # Turso 模式
+                if detail_url:
+                    existing_result = await self._query("SELECT id, zh_name FROM game_resources WHERE detail_url = ?", (detail_url,))
+                    existing = existing_result[0] if existing_result else None
+                
+                if not existing:
+                    existing_result = await self._query("SELECT id, zh_name FROM game_resources WHERE zh_name = ?", (name,))
+                    existing = existing_result[0] if existing_result else None
+                
+                if existing:
+                    resource_id, db_zh_name = existing
+                    # 更新现有记录
+                    update_sets = []
+                    values = []
+                    for field in all_fields:
+                        if field in data:
+                            update_sets.append(f"{field} = ?")
+                            values.append(data.get(field))
+                    update_sets.append("updated_at = ?")
+                    values.append(now)
+                    values.append(resource_id) # WHERE 条件
+                    
+                    sql = f"UPDATE game_resources SET {', '.join(update_sets)} WHERE id = ?"
+                    await self._execute(sql, tuple(values))
+                else:
+                    # 插入新记录
+                    fields = ['zh_name', 'updated_at']
+                    values = [name, now]
+                    for field in all_fields:
+                        if field in data:
+                            fields.append(field)
+                            values.append(data.get(field))
+                    
+                    fields_str = ', '.join(fields)
+                    placeholders = ', '.join(['?' for _ in values])
+                    sql = f"INSERT INTO game_resources ({fields_str}) VALUES ({placeholders})"
+                    await self._execute(sql, tuple(values))
 
-                for field in all_fields:
-                    if field in data:
-                        fields.append(field)
-                        values.append(data.get(field))
-                        update_sets.append(f"{field} = excluded.{field}")
-
-                # 如果没有额外字段，至少更新 updated_at
-                if not update_sets:
-                    update_sets.append("updated_at = excluded.updated_at")
-
-                fields_str = ', '.join(fields)
-                placeholders = ', '.join(['?' for _ in values])
-                update_str = ', '.join(update_sets)
-
-                sql = f"""
-                    INSERT INTO game_resources ({fields_str})
-                    VALUES ({placeholders})
-                    ON CONFLICT(zh_name) DO UPDATE SET
-                        {update_str}
-                """
-                await self._execute(sql, values)
-
-            logger.info(f"[DB Game] 保存游戏资源: {name}, 字段: {[f for f in all_fields if f in data]}")
+            logger.info(f"[DB Game] 保存游戏资源: {name}, 标识匹配: {'已更新' if existing else '新插入'}")
             return True
         except Exception as e:
             logger.error(f"[DB Game] 保存游戏资源失败: {e}")

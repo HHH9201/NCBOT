@@ -13,6 +13,7 @@ default:
     epic: true           # Epic 喜加一插件 - 获取 Epic 免费游戏
     steam: true          # Steam 价格监控插件
     resource_collector: false  # 资源收集插件 - 默认关闭
+    trae_stats: false    # Trae 额度统计 - 默认关闭，仅在指定群开启
 
 # 特定群配置（优先级高于 default）
 groups:
@@ -27,6 +28,13 @@ groups:
       epic: true
       steam: true
       resource_collector: true
+      trae_stats: true
+
+  # 仅允许在该群使用 Trae 额度统计
+  "894356872":
+    plugins:
+      txt: false
+      trae_stats: false
 
   # 资源收集群 - 禁止所有功能，只保留静默收集资源
   "864170514":
@@ -39,6 +47,7 @@ groups:
       epic: false
       steam: false
       resource_collector: true
+      trae_stats: false
 
 # 黑名单群（完全禁用机器人）
 blacklist: []

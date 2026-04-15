@@ -5,6 +5,7 @@
 """
 import yaml
 import logging
+import os
 from pathlib import Path
 from typing import Dict, Any, Optional
 from functools import wraps
@@ -20,15 +21,19 @@ class GroupPermissionManager:
 
     def __init__(self):
         self._config: Dict[str, Any] = {}
+        self._last_mtime = 0
         self._load_config()
 
     def _load_config(self):
         """加载权限配置"""
         try:
             if PERMISSIONS_FILE.exists():
-                with open(PERMISSIONS_FILE, 'r', encoding='utf-8') as f:
-                    self._config = yaml.safe_load(f) or {}
-                logger.info(f"[Permission] 成功加载权限配置")
+                mtime = os.path.getmtime(PERMISSIONS_FILE)
+                if mtime > self._last_mtime:
+                    with open(PERMISSIONS_FILE, 'r', encoding='utf-8') as f:
+                        self._config = yaml.safe_load(f) or {}
+                    self._last_mtime = mtime
+                    logger.info(f"[Permission] 成功加载/更新权限配置")
             else:
                 logger.warning(f"[Permission] 配置文件不存在: {PERMISSIONS_FILE}")
                 self._config = self._get_default_config()
@@ -50,6 +55,7 @@ class GroupPermissionManager:
 
     def reload(self):
         """重新加载配置"""
+        self._last_mtime = 0  # 强制重新加载
         self._load_config()
         logger.info("[Permission] 权限配置已重新加载")
 
@@ -64,6 +70,7 @@ class GroupPermissionManager:
         :param group_id: 群号
         :return: True 表示允许，False 表示禁止
         """
+        self._load_config()  # 检查是否需要热重载
         group_id_str = self._get_group_id_str(group_id)
 
         # 检查黑名单
@@ -86,6 +93,7 @@ class GroupPermissionManager:
         :param plugin_name: 插件名称
         :return: True 表示启用，False 表示禁用
         """
+        self._load_config()  # 检查是否需要热重载
         group_id_str = self._get_group_id_str(group_id)
 
         # 先检查群是否被允许
