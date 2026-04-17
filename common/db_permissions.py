@@ -132,23 +132,86 @@ class TursoResourceManager:
         # 创建索引优化查询性能
         await self._init_indexes()
 
-    async def _init_indexes(self):
-        """初始化数据库索引"""
+        # 初始化 FTS5 全文搜索
+        await self._init_fts5()
+
+    async def _init_fts5(self):
+        """初始化 FTS5 全文搜索虚拟表和触发器"""
         try:
-            # 为 game_resources 表创建索引
-            indexes = [
-                "CREATE INDEX IF NOT EXISTS idx_game_zh_name ON game_resources(zh_name)",
-                "CREATE INDEX IF NOT EXISTS idx_game_en_name ON game_resources(en_name)",
-                "CREATE INDEX IF NOT EXISTS idx_game_updated_at ON game_resources(updated_at DESC)",
-                "CREATE INDEX IF NOT EXISTS idx_resources_name ON resources(name)",
-            ]
+            # 1. 创建 FTS5 虚拟表
+            # 使用 unicode61 分词器以支持中文搜索
+            await self._execute_sql("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS game_resources_fts USING fts5(
+                    zh_name,
+                    en_name,
+                    content='game_resources',
+                    content_rowid='id',
+                    tokenize='unicode61'
+                )
+            """)
 
-            for sql in indexes:
-                try:
-                    await self._execute_sql(sql)
-                except Exception as e:
-                    logger.warning(f"[DB Resource] 创建索引失败: {sql}, 错误: {e}")
+            # 2. 创建同步触发器
+            # INSERT 触发器
+            await self._execute_sql("""
+                CREATE TRIGGER IF NOT EXISTS game_resources_ai AFTER INSERT ON game_resources BEGIN
+                    INSERT INTO game_resources_fts(rowid, zh_name, en_name) VALUES (new.id, new.zh_name, new.en_name);
+                END
+            """)
 
+            # DELETE 触发器
+            await self._execute_sql("""
+                CREATE TRIGGER IF NOT EXISTS game_resources_ad AFTER DELETE ON game_resources BEGIN
+                    INSERT INTO game_resources_fts(game_resources_fts, rowid, zh_name, en_name) VALUES('delete', old.id, old.zh_name, old.en_name);
+                END
+            """)
+
+            # UPDATE 触发器
+            await self._execute_sql("""
+                CREATE TRIGGER IF NOT EXISTS game_resources_au AFTER UPDATE ON game_resources BEGIN
+                    INSERT INTO game_resources_fts(game_resources_fts, rowid, zh_name, en_name) VALUES('delete', old.id, old.zh_name, old.en_name);
+                    INSERT INTO game_resources_fts(rowid, zh_name, en_name) VALUES (new.id, new.zh_name, new.en_name);
+                END
+            """)
+
+            # 3. 同步现有数据（如果 FTS5 表为空）
+            count_res = await self._query("SELECT COUNT(*) FROM game_resources_fts")
+            if count_res and count_res[0][0] == 0:
+                logger.info("[DB Resource] 正在同步现有数据到 FTS5 虚拟表...")
+                await self._execute_sql("""
+                    INSERT INTO game_resources_fts(rowid, zh_name, en_name)
+                    SELECT id, zh_name, en_name FROM game_resources
+                """)
+                logger.info("[DB Resource] FTS5 数据同步完成")
+
+            logger.info("[DB Resource] FTS5 全文搜索初始化完成")
+        except Exception as e:
+            logger.warning(f"[DB Resource] 初始化 FTS5 失败: {e}")
+
+    async def _init_indexes(self):
+        """初始化索引，优化查询性能"""
+        try:
+            # game_resources 索引
+            await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_game_resources_zh_name ON game_resources(zh_name)")
+            await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_game_resources_en_name ON game_resources(en_name)")
+            await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_game_resources_updated_at ON game_resources(updated_at DESC)")
+            # 核心优化：为爬虫查重添加索引
+            await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_game_resources_detail_url ON game_resources(detail_url)")
+            
+            # game_name 索引 (优化 game_name 表的高频查询)
+            await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_game_name_zh_name ON game_name(zh_name)")
+            
+            # users 索引
+            await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_users_openid ON users(openid)")
+            await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_users_qq_id ON users(qq_id)")
+            await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_users_virtual_id ON users(virtual_id)")
+            
+            # resources 索引
+            await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_resources_name ON resources(name)")
+            await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_resources_created_at ON resources(created_at DESC)")
+            
+            # ntqq_key 索引
+            await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_ntqq_key_name ON ntqq_key(name)")
+            
             logger.info("[DB Resource] 数据库索引初始化完成")
         except Exception as e:
             logger.warning(f"[DB Resource] 初始化索引失败: {e}")
@@ -642,7 +705,9 @@ class TursoResourceManager:
                    online_url, online_code, patch_url, online_at, detail_url, updated_at,
                    pan123_url, pan123_code, mobile_url, mobile_code, tianyi_url, tianyi_code,
                    xunlei_url, xunlei_code
-            FROM game_resources WHERE zh_name = ?
+            FROM game_resources 
+            INDEXED BY idx_game_resources_zh_name
+            WHERE zh_name = ?
         """
 
         if self._local_mode:
@@ -711,18 +776,15 @@ class TursoResourceManager:
         ]
 
         try:
-            # 优先根据 detail_url 查找，因为它是唯一的资源标识符
+            # 优化：优先根据 detail_url 查找，且合并查询以减少网络往返和扫描风险
             detail_url = data.get('detail_url')
             existing = None
             
             if self._local_mode:
-                if detail_url:
-                    self._local_cursor.execute("SELECT id, zh_name FROM game_resources WHERE detail_url = ?", (detail_url,))
-                    existing = self._local_cursor.fetchone()
-                
-                if not existing:
-                    self._local_cursor.execute("SELECT id, zh_name FROM game_resources WHERE zh_name = ?", (name,))
-                    existing = self._local_cursor.fetchone()
+                # 使用单次查询同时匹配 detail_url 和 zh_name，并利用索引
+                query_sql = "SELECT id, zh_name FROM game_resources WHERE detail_url = ? OR zh_name = ? LIMIT 1"
+                self._local_cursor.execute(query_sql, (detail_url, name))
+                existing = self._local_cursor.fetchone()
                 
                 if existing:
                     resource_id, db_zh_name = existing
@@ -754,14 +816,15 @@ class TursoResourceManager:
                 
                 self._local_conn.commit()
             else:
-                # Turso 模式
-                if detail_url:
-                    existing_result = await self._query("SELECT id, zh_name FROM game_resources WHERE detail_url = ?", (detail_url,))
-                    existing = existing_result[0] if existing_result else None
-                
-                if not existing:
-                    existing_result = await self._query("SELECT id, zh_name FROM game_resources WHERE zh_name = ?", (name,))
-                    existing = existing_result[0] if existing_result else None
+                # Turso 模式：合并查询并利用索引 (强制使用 detail_url 索引加速查重)
+                query_sql = """
+                    SELECT id, zh_name FROM game_resources 
+                    INDEXED BY idx_game_resources_detail_url 
+                    WHERE detail_url = ? OR zh_name = ? 
+                    LIMIT 1
+                """
+                existing_result = await self._query(query_sql, (detail_url, name))
+                existing = existing_result[0] if existing_result else None
                 
                 if existing:
                     resource_id, db_zh_name = existing
@@ -809,7 +872,7 @@ class TursoResourceManager:
         """
         await self.initialize()
 
-        sql = "DELETE FROM game_resources WHERE zh_name = ?"
+        sql = "DELETE FROM game_resources INDEXED BY idx_game_resources_zh_name WHERE zh_name = ?"
 
         try:
             if self._local_mode:
@@ -859,7 +922,7 @@ class TursoResourceManager:
         _search_cache[cache_key] = (result, now)
 
     async def search_game_resources(self, keyword: str, limit: int = 50) -> List[Dict[str, Any]]:
-        """搜索游戏资源（带缓存优化）
+        """搜索游戏资源（带缓存优化 + FTS5 全文搜索）
 
         Args:
             keyword: 搜索关键词
@@ -870,64 +933,104 @@ class TursoResourceManager:
         """
         await self.initialize()
 
-        # 检查缓存
+        # 1. 检查缓存
         cache_key = self._get_cache_key(keyword, limit)
         cached_result = self._get_from_cache(cache_key)
         if cached_result is not None:
             logger.debug(f"[DB Cache] 缓存命中: {keyword}")
             return cached_result
 
-        # 使用前缀匹配优化查询性能
-        # 如果关键词长度 >= 2，尝试前缀匹配以利用索引
-        keyword_lower = keyword.lower()
+        rows = []
+        is_short = False
+        
+        # 2. 尝试使用 FTS5 MATCH 搜索 (性能最高，消耗最低，支持分词)
+        try:
+            # 清理关键词并构造 FTS5 查询语句
+            # 使用引号包裹以支持精确匹配，添加 * 支持前缀匹配
+            import re
+            clean_keyword = re.sub(r'[^\w\s]', ' ', keyword).strip()
+            
+            # 如果关键词太短（小于2个字符），且不是数字，则不进行全表模糊搜索
+            is_short = len(clean_keyword) < 2 and not clean_keyword.isdigit()
+            
+            if clean_keyword:
+                fts_query = f'"{clean_keyword}" OR {clean_keyword}*'
+                
+                sql_fts = """
+                    SELECT gr.id, gr.platform, gr.genre, gr.zh_name, gr.en_name, gr.image_url, gr.version, gr.details,
+                           gr.password, gr.baidu_url, gr.baidu_code, gr.quark_url, gr.quark_code, gr.uc_url, gr.uc_code,
+                           gr.online_url, gr.online_code, gr.patch_url, gr.online_at, gr.detail_url, gr.updated_at,
+                           gr.pan123_url, gr.pan123_code, gr.mobile_url, gr.mobile_code, gr.tianyi_url, gr.tianyi_code,
+                           gr.xunlei_url, gr.xunlei_code
+                    FROM game_resources gr
+                    JOIN game_resources_fts fts ON gr.id = fts.rowid
+                    WHERE game_resources_fts MATCH ?
+                    ORDER BY rank, updated_at DESC
+                    LIMIT ?
+                """
+                
+                if self._local_mode:
+                    self._local_cursor.execute(sql_fts, (fts_query, limit))
+                    rows = self._local_cursor.fetchall()
+                else:
+                    rows = await self._query(sql_fts, (fts_query, limit))
+                
+                if rows:
+                    logger.debug(f"[DB Search] FTS5 命中: {keyword}, 找到 {len(rows)} 条")
+        except Exception as e:
+            logger.warning(f"[DB Search] FTS5 搜索异常，回退到 LIKE 模式: {e}")
 
-        # 首先尝试前缀匹配 (可以利用索引)
-        prefix_pattern = f"{keyword}%"
-        sql_prefix = """
-            SELECT id, platform, genre, zh_name, en_name, image_url, version, details,
-                   password, baidu_url, baidu_code, quark_url, quark_code, uc_url, uc_code,
-                   online_url, online_code, patch_url, online_at, detail_url, updated_at,
-                   pan123_url, pan123_code, mobile_url, mobile_code, tianyi_url, tianyi_code,
-                   xunlei_url, xunlei_code
-            FROM game_resources
-            WHERE zh_name LIKE ? OR en_name LIKE ?
-            ORDER BY updated_at DESC
-            LIMIT ?
-        """
-
-        if self._local_mode:
-            self._local_cursor.execute(sql_prefix, (prefix_pattern, prefix_pattern, limit))
-            rows = self._local_cursor.fetchall()
-        else:
-            rows = await self._query(sql_prefix, (prefix_pattern, prefix_pattern, limit))
-
-        # 如果前缀匹配结果太少，再尝试全模糊匹配
-        if len(rows) < 3 and len(keyword) >= 2:
-            full_pattern = f"%{keyword}%"
-            sql_full = """
+        # 3. 如果 FTS5 未命中，回退到传统 LIKE 模糊搜索 (兜底逻辑)
+        if not rows and not is_short:
+            # 首先尝试前缀匹配 (可以利用索引，速度快)
+            prefix_pattern = f"{keyword}%"
+            sql_prefix = """
                 SELECT id, platform, genre, zh_name, en_name, image_url, version, details,
                        password, baidu_url, baidu_code, quark_url, quark_code, uc_url, uc_code,
                        online_url, online_code, patch_url, online_at, detail_url, updated_at,
                        pan123_url, pan123_code, mobile_url, mobile_code, tianyi_url, tianyi_code,
                        xunlei_url, xunlei_code
                 FROM game_resources
-                WHERE (zh_name LIKE ? OR en_name LIKE ?)
-                  AND zh_name NOT LIKE ?
-                  AND (en_name IS NULL OR en_name NOT LIKE ?)
+                INDEXED BY idx_game_resources_zh_name
+                WHERE zh_name LIKE ? OR en_name LIKE ?
                 ORDER BY updated_at DESC
                 LIMIT ?
             """
 
             if self._local_mode:
-                self._local_cursor.execute(sql_full, (full_pattern, full_pattern, prefix_pattern, prefix_pattern, limit - len(rows)))
-                additional_rows = self._local_cursor.fetchall()
+                self._local_cursor.execute(sql_prefix, (prefix_pattern, prefix_pattern, limit))
+                rows = self._local_cursor.fetchall()
             else:
-                additional_rows = await self._query(sql_full, (full_pattern, full_pattern, prefix_pattern, prefix_pattern, limit - len(rows)))
+                rows = await self._query(sql_prefix, (prefix_pattern, prefix_pattern, limit))
 
-            rows = list(rows) + list(additional_rows)
+            # 如果前缀匹配结果太少，且关键词长度足够，才尝试全模糊匹配 (全表扫描)
+            if len(rows) < 3 and len(keyword) >= 3: # 提高到 3 个字符才执行全模糊
+                full_pattern = f"%{keyword}%"
+                sql_full = """
+                     SELECT id, platform, genre, zh_name, en_name, image_url, version, details,
+                            password, baidu_url, baidu_code, quark_url, quark_code, uc_url, uc_code,
+                            online_url, online_code, patch_url, online_at, detail_url, updated_at,
+                            pan123_url, pan123_code, mobile_url, mobile_code, tianyi_url, tianyi_code,
+                            xunlei_url, xunlei_code
+                     FROM game_resources
+                    WHERE (zh_name LIKE ? OR en_name LIKE ?)
+                      AND zh_name NOT LIKE ?
+                      AND (en_name IS NULL OR en_name NOT LIKE ?)
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                """
+
+                if self._local_mode:
+                    self._local_cursor.execute(sql_full, (full_pattern, full_pattern, prefix_pattern, prefix_pattern, limit - len(rows)))
+                    additional_rows = self._local_cursor.fetchall()
+                else:
+                    additional_rows = await self._query(sql_full, (full_pattern, full_pattern, prefix_pattern, prefix_pattern, limit - len(rows)))
+
+                rows = list(rows) + list(additional_rows)
 
         games = []
         for row in rows:
+            # ... existing game dict construction ...
             games.append({
                 "id": row[0],
                 "platform": row[1],

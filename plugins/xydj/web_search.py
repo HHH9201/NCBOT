@@ -276,7 +276,7 @@ async def search_game(game_name: str):
     game_name_lower = game_name.lower()
 
     async with SEARCH_SEMAPHORE:
-        url = f"https://www.xianyudanji.to/?cat=1&s={game_name}&order=views"
+        url = f"https://www.xianyudanji.top/?cat=1&s={game_name}&order=views"
         print(f"[XianYu Search] Requesting: {url}")
         cookie = await get_xydj_cookie()
         headers = {"Cookie": cookie} if cookie else None

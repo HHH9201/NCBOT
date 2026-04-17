@@ -71,7 +71,7 @@ def get_cookies_dict(cookies_str):
 
 async def search_game_from_web(game_name: str):
     """从网站搜索游戏"""
-    search_url = f"{WEB_BASE_URL}/?cat=1&s={game_name}"
+    search_url = f"{WEB_BASE_URL}/?cat=1&s={game_name}&order=views"
     print(f"[Web Search] 正在从网站搜索: {game_name}")
     try:
         current_cookie = await get_latest_cookie()
@@ -304,33 +304,35 @@ class Xydj(BasePlugin):
         self.http_client = httpx.AsyncClient(timeout=30)
 
     async def get_user_info(self, user_id):
-        """获取用户信息，返回 JSON 数据或 None"""
+        """获取用户信息，返回数据字典或 None"""
         try:
-            # 修正接口路径：从 /api/user/info 改为 /api/admin/user_info
+            # 修正接口路径：从 /api/admin/user_info 统一到正式权限校验接口
+            # 注意：此处必须使用 resolve_openid 或直接查询 users 表的接口
+            # 经过之前的优化，后端 /api/admin/user_info 应该已经支持通过 qq_id 查询
             url = f"{BACKEND_URL}/api/admin/user_info?platform=qq_id&platform_id={user_id}"
             headers = {"app-id": APP_ID, "app-secret": APP_SECRET}
-            resp = await self.http_client.get(url, headers=headers)
             
-            # 增加详细日志排查
-            if resp.status_code != 200:
-                try:
-                    err_content = resp.json()
-                except:
-                    err_content = resp.text[:100]
-                # 忽略正常的 404 (用户确实不存在)
-                if resp.status_code != 404:
-                    logger.warning(f"[User Info Check] 接口返回非200状态码: {resp.status_code}, 响应内容: {err_content}, URL: {url}")
-                return None
-            
-            res_data = resp.json()
-            # 后端返回格式为 {"success": True, "data": {...}}
-            if res_data.get("success") and res_data.get("data"):
-                return res_data["data"]
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url, headers=headers)
                 
+                if resp.status_code == 200:
+                    res_json = resp.json()
+                    # 这里的 success 指的是接口请求成功，data 指的是查到了用户
+                    if res_json.get("success") and res_json.get("data"):
+                        user_data = res_json["data"]
+                        # 核心判定：只要这个 QQ 号在 users 表里有记录，就认为已验证
+                        if user_data.get("openid") or user_data.get("qq_id"):
+                            logger.info(f"[User Check] 确认用户 {user_id} 已存在，OpenID: {user_data.get('openid')}")
+                            return user_data
+                
+                # 记录非 200 或未查到数据的情况
+                if resp.status_code != 404:
+                    logger.warning(f"[User Check] 接口响应异常: {resp.status_code}, 内容: {resp.text[:100]}")
+                    
             return None
         except Exception as e:
-            logger.error(f"[User Info Check] 请求异常: {e}")
-        return None
+            logger.error(f"[User Check] 请求异常: {e}")
+            return None
 
     def _build_game_messages(self, game_data):
         """构建三段式消息内容：单机、联机、图片"""
@@ -448,6 +450,8 @@ class Xydj(BasePlugin):
                 # 只要有数据，直接发送资源内容 (合并转发)
                 messages = self._build_game_messages(game["db_data"])
                 await self._send_final_forward(event.group_id, messages, user_id, event.sender.nickname)
+                # 显式回复一条提示
+                await event.reply(rtf=MessageArray([Reply(id=event.message_id), PlainText(text="✅ 您已完成过验证，资源已通过合并转发消息发送！")]))
                 return
 
             # 2. 构造同步 Payload (机器人排版)
