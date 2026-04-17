@@ -1,0 +1,5 @@
+name = "trae_admin"
+version = "1.0.0"
+description = "Trae 后端管理插件"
+main = "main.py"
+author = "Trae"

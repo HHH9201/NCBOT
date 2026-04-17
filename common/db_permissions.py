@@ -11,10 +11,20 @@ import json
 import logging
 import asyncio
 import aiohttp
+import time
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# 搜索缓存: {cache_key: (result, timestamp)}
+_search_cache: Dict[str, Any] = {}
+_cache_ttl = 300  # 缓存有效期 5 分钟
+_max_cache_size = 100  # 最大缓存条目数
+
+# 统计缓存: {cache_key: (result, timestamp)}
+_stats_cache: Dict[str, Any] = {}
+_stats_cache_ttl = 300  # 统计缓存 5 分钟
 
 # Turso 数据库配置
 TURSO_URL = "https://weixin-hhh9201.aws-ap-northeast-1.turso.io"
@@ -118,6 +128,30 @@ class TursoResourceManager:
 
         # 初始化 key 表（插入默认空记录）
         await self._init_key_table()
+
+        # 创建索引优化查询性能
+        await self._init_indexes()
+
+    async def _init_indexes(self):
+        """初始化数据库索引"""
+        try:
+            # 为 game_resources 表创建索引
+            indexes = [
+                "CREATE INDEX IF NOT EXISTS idx_game_zh_name ON game_resources(zh_name)",
+                "CREATE INDEX IF NOT EXISTS idx_game_en_name ON game_resources(en_name)",
+                "CREATE INDEX IF NOT EXISTS idx_game_updated_at ON game_resources(updated_at DESC)",
+                "CREATE INDEX IF NOT EXISTS idx_resources_name ON resources(name)",
+            ]
+
+            for sql in indexes:
+                try:
+                    await self._execute_sql(sql)
+                except Exception as e:
+                    logger.warning(f"[DB Resource] 创建索引失败: {sql}, 错误: {e}")
+
+            logger.info("[DB Resource] 数据库索引初始化完成")
+        except Exception as e:
+            logger.warning(f"[DB Resource] 初始化索引失败: {e}")
 
     async def _init_key_table(self):
         """初始化 key 表，插入默认记录"""
@@ -532,63 +566,63 @@ class TursoResourceManager:
         logger.info(f"[DB Resource] 删除资源 ID: {resource_id}")
 
     async def get_resource_stats(self) -> Dict[str, Any]:
-        """获取资源统计信息
+        """获取资源统计信息（带缓存优化）
 
         Returns:
             统计信息字典
         """
+        global _stats_cache
+
+        cache_key = "resource_stats"
+        now = time.time()
+
+        # 检查缓存
+        if cache_key in _stats_cache:
+            result, timestamp = _stats_cache[cache_key]
+            if now - timestamp < _stats_cache_ttl:
+                logger.debug(f"[DB Cache] 统计缓存命中")
+                return result
+
         await self.initialize()
 
-        # 总资源数
-        total_sql = "SELECT COUNT(*) FROM resources"
-        # 各网盘类型数量
-        quark_sql = "SELECT COUNT(*) FROM resources WHERE quark_link IS NOT NULL"
-        uc_sql = "SELECT COUNT(*) FROM resources WHERE uc_link IS NOT NULL"
-        baidu_sql = "SELECT COUNT(*) FROM resources WHERE baidu_link IS NOT NULL"
-        aliyun_sql = "SELECT COUNT(*) FROM resources WHERE aliyun_link IS NOT NULL"
-        tianyi_sql = "SELECT COUNT(*) FROM resources WHERE tianyi_link IS NOT NULL"
-        xunlei_sql = "SELECT COUNT(*) FROM resources WHERE xunlei_link IS NOT NULL"
+        # 使用单次查询获取所有统计信息，减少数据库往返
+        combined_sql = """
+            SELECT 
+                COUNT(*) as total,
+                SUM(CASE WHEN quark_link IS NOT NULL THEN 1 ELSE 0 END) as quark,
+                SUM(CASE WHEN uc_link IS NOT NULL THEN 1 ELSE 0 END) as uc,
+                SUM(CASE WHEN baidu_link IS NOT NULL THEN 1 ELSE 0 END) as baidu,
+                SUM(CASE WHEN aliyun_link IS NOT NULL THEN 1 ELSE 0 END) as aliyun,
+                SUM(CASE WHEN tianyi_link IS NOT NULL THEN 1 ELSE 0 END) as tianyi,
+                SUM(CASE WHEN xunlei_link IS NOT NULL THEN 1 ELSE 0 END) as xunlei
+            FROM resources
+        """
 
         if self._local_mode:
-            self._local_cursor.execute(total_sql)
-            total = self._local_cursor.fetchone()[0]
-            self._local_cursor.execute(quark_sql)
-            quark_count = self._local_cursor.fetchone()[0]
-            self._local_cursor.execute(uc_sql)
-            uc_count = self._local_cursor.fetchone()[0]
-            self._local_cursor.execute(baidu_sql)
-            baidu_count = self._local_cursor.fetchone()[0]
-            self._local_cursor.execute(aliyun_sql)
-            aliyun_count = self._local_cursor.fetchone()[0]
-            self._local_cursor.execute(tianyi_sql)
-            tianyi_count = self._local_cursor.fetchone()[0]
-            self._local_cursor.execute(xunlei_sql)
-            xunlei_count = self._local_cursor.fetchone()[0]
+            self._local_cursor.execute(combined_sql)
+            row = self._local_cursor.fetchone()
+            total, quark_count, uc_count, baidu_count, aliyun_count, tianyi_count, xunlei_count = row
         else:
-            total_result = await self._query(total_sql)
-            total = total_result[0][0] if total_result else 0
-            quark_result = await self._query(quark_sql)
-            quark_count = quark_result[0][0] if quark_result else 0
-            uc_result = await self._query(uc_sql)
-            uc_count = uc_result[0][0] if uc_result else 0
-            baidu_result = await self._query(baidu_sql)
-            baidu_count = baidu_result[0][0] if baidu_result else 0
-            aliyun_result = await self._query(aliyun_sql)
-            aliyun_count = aliyun_result[0][0] if aliyun_result else 0
-            tianyi_result = await self._query(tianyi_sql)
-            tianyi_count = tianyi_result[0][0] if tianyi_result else 0
-            xunlei_result = await self._query(xunlei_sql)
-            xunlei_count = xunlei_result[0][0] if xunlei_result else 0
+            result = await self._query(combined_sql)
+            if result:
+                row = result[0]
+                total, quark_count, uc_count, baidu_count, aliyun_count, tianyi_count, xunlei_count = row
+            else:
+                total = quark_count = uc_count = baidu_count = aliyun_count = tianyi_count = xunlei_count = 0
 
-        return {
-            "total": total,
-            "quark": quark_count,
-            "uc": uc_count,
-            "baidu": baidu_count,
-            "aliyun": aliyun_count,
-            "tianyi": tianyi_count,
-            "xunlei": xunlei_count
+        result = {
+            "total": total or 0,
+            "quark": quark_count or 0,
+            "uc": uc_count or 0,
+            "baidu": baidu_count or 0,
+            "aliyun": aliyun_count or 0,
+            "tianyi": tianyi_count or 0,
+            "xunlei": xunlei_count or 0
         }
+
+        # 存入缓存
+        _stats_cache[cache_key] = (result, now)
+        return result
 
     # ========== 游戏资源相关方法 ==========
     async def get_game_resource(self, name: str) -> Optional[Dict[str, Any]]:
@@ -790,8 +824,42 @@ class TursoResourceManager:
             logger.error(f"[DB Game] 删除游戏资源失败: {e}")
             return False
 
+    def _get_cache_key(self, keyword: str, limit: int) -> str:
+        """生成缓存键"""
+        return f"search:{keyword.lower()}:{limit}"
+
+    def _get_from_cache(self, cache_key: str):
+        """从缓存获取结果"""
+        global _search_cache
+        if cache_key not in _search_cache:
+            return None
+
+        result, timestamp = _search_cache[cache_key]
+        if time.time() - timestamp > _cache_ttl:
+            # 缓存过期，删除
+            del _search_cache[cache_key]
+            return None
+        return result
+
+    def _set_cache(self, cache_key: str, result: List[Dict[str, Any]]):
+        """设置缓存"""
+        global _search_cache
+
+        # 清理过期缓存
+        now = time.time()
+        expired_keys = [k for k, (_, ts) in _search_cache.items() if now - ts > _cache_ttl]
+        for k in expired_keys:
+            del _search_cache[k]
+
+        # 如果缓存满了，删除最旧的条目
+        if len(_search_cache) >= _max_cache_size:
+            oldest_key = min(_search_cache.keys(), key=lambda k: _search_cache[k][1])
+            del _search_cache[oldest_key]
+
+        _search_cache[cache_key] = (result, now)
+
     async def search_game_resources(self, keyword: str, limit: int = 50) -> List[Dict[str, Any]]:
-        """搜索游戏资源
+        """搜索游戏资源（带缓存优化）
 
         Args:
             keyword: 搜索关键词
@@ -802,8 +870,21 @@ class TursoResourceManager:
         """
         await self.initialize()
 
-        sql = """
-            SELECT id, platform, genre, zh_name, en_name, image_url, version, details, 
+        # 检查缓存
+        cache_key = self._get_cache_key(keyword, limit)
+        cached_result = self._get_from_cache(cache_key)
+        if cached_result is not None:
+            logger.debug(f"[DB Cache] 缓存命中: {keyword}")
+            return cached_result
+
+        # 使用前缀匹配优化查询性能
+        # 如果关键词长度 >= 2，尝试前缀匹配以利用索引
+        keyword_lower = keyword.lower()
+
+        # 首先尝试前缀匹配 (可以利用索引)
+        prefix_pattern = f"{keyword}%"
+        sql_prefix = """
+            SELECT id, platform, genre, zh_name, en_name, image_url, version, details,
                    password, baidu_url, baidu_code, quark_url, quark_code, uc_url, uc_code,
                    online_url, online_code, patch_url, online_at, detail_url, updated_at,
                    pan123_url, pan123_code, mobile_url, mobile_code, tianyi_url, tianyi_code,
@@ -814,13 +895,36 @@ class TursoResourceManager:
             LIMIT ?
         """
 
-        search_pattern = f"%{keyword}%"
-
         if self._local_mode:
-            self._local_cursor.execute(sql, (search_pattern, search_pattern, limit))
+            self._local_cursor.execute(sql_prefix, (prefix_pattern, prefix_pattern, limit))
             rows = self._local_cursor.fetchall()
         else:
-            rows = await self._query(sql, (search_pattern, search_pattern, limit))
+            rows = await self._query(sql_prefix, (prefix_pattern, prefix_pattern, limit))
+
+        # 如果前缀匹配结果太少，再尝试全模糊匹配
+        if len(rows) < 3 and len(keyword) >= 2:
+            full_pattern = f"%{keyword}%"
+            sql_full = """
+                SELECT id, platform, genre, zh_name, en_name, image_url, version, details,
+                       password, baidu_url, baidu_code, quark_url, quark_code, uc_url, uc_code,
+                       online_url, online_code, patch_url, online_at, detail_url, updated_at,
+                       pan123_url, pan123_code, mobile_url, mobile_code, tianyi_url, tianyi_code,
+                       xunlei_url, xunlei_code
+                FROM game_resources
+                WHERE (zh_name LIKE ? OR en_name LIKE ?)
+                  AND zh_name NOT LIKE ?
+                  AND (en_name IS NULL OR en_name NOT LIKE ?)
+                ORDER BY updated_at DESC
+                LIMIT ?
+            """
+
+            if self._local_mode:
+                self._local_cursor.execute(sql_full, (full_pattern, full_pattern, prefix_pattern, prefix_pattern, limit - len(rows)))
+                additional_rows = self._local_cursor.fetchall()
+            else:
+                additional_rows = await self._query(sql_full, (full_pattern, full_pattern, prefix_pattern, prefix_pattern, limit - len(rows)))
+
+            rows = list(rows) + list(additional_rows)
 
         games = []
         for row in rows:
@@ -855,6 +959,10 @@ class TursoResourceManager:
                 "xunlei_url": row[27],
                 "xunlei_code": row[28]
             })
+
+        # 存入缓存
+        self._set_cache(cache_key, games)
+        logger.debug(f"[DB Search] 搜索结果已缓存: {keyword}, 找到 {len(games)} 条")
 
         return games
 

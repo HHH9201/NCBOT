@@ -210,29 +210,33 @@ class TraeEmailManager:
             return False
 
     async def get_stats(self) -> Dict[str, int]:
-        """获取账号统计信息"""
+        """获取账号统计信息（优化：单次查询获取所有统计）"""
         await self.initialize()
 
-        total_sql = "SELECT COUNT(*) FROM email_accounts"
-        assigned_sql = "SELECT COUNT(*) FROM email_accounts WHERE status = 'used'"
-        unassigned_sql = "SELECT COUNT(*) FROM email_accounts WHERE status = 'available'"
+        # 优化：使用单个查询获取所有统计信息
+        combined_sql = """
+            SELECT 
+                COUNT(*) as total,
+                SUM(CASE WHEN status = 'used' THEN 1 ELSE 0 END) as assigned,
+                SUM(CASE WHEN status = 'available' THEN 1 ELSE 0 END) as unassigned
+            FROM email_accounts
+        """
 
-        total_result = await self._query_sql(total_sql)
-        assigned_result = await self._query_sql(assigned_sql)
-        unassigned_result = await self._query_sql(unassigned_sql)
-
-        return {
-            "total": total_result[0][0] if total_result else 0,
-            "assigned": assigned_result[0][0] if assigned_result else 0,
-            "unassigned": unassigned_result[0][0] if unassigned_result else 0
-        }
+        result = await self._query_sql(combined_sql)
+        if result:
+            total, assigned, unassigned = result[0]
+            return {
+                "total": total or 0,
+                "assigned": assigned or 0,
+                "unassigned": unassigned or 0
+            }
+        return {"total": 0, "assigned": 0, "unassigned": 0}
 
     async def get_unassigned_count(self) -> int:
         """获取未分配账号数量"""
-        await self.initialize()
-        unassigned_sql = "SELECT COUNT(*) FROM email_accounts WHERE status = 'available'"
-        result = await self._query_sql(unassigned_sql)
-        return result[0][0] if result else 0
+        # 复用 get_stats 的结果，减少重复查询
+        stats = await self.get_stats()
+        return stats.get("unassigned", 0)
 
 
 # 全局账号管理器实例
