@@ -10,10 +10,12 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from functools import wraps
 
+from .config import ROOT_DIR
+
 logger = logging.getLogger(__name__)
 
 # 权限配置文件路径
-PERMISSIONS_FILE = Path("/home/hjh/BOT/NCBOT/config/group_permissions.yaml")
+PERMISSIONS_FILE = ROOT_DIR / "config" / "group_permissions.yaml"
 
 
 class GroupPermissionManager:
@@ -40,6 +42,23 @@ class GroupPermissionManager:
         except Exception as e:
             logger.error(f"[Permission] 加载配置失败: {e}")
             self._config = self._get_default_config()
+
+    def _save_config(self):
+        """保存权限配置"""
+        try:
+            PERMISSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(PERMISSIONS_FILE, 'w', encoding='utf-8') as f:
+                yaml.safe_dump(
+                    self._config,
+                    f,
+                    allow_unicode=True,
+                    sort_keys=False,
+                )
+            self._last_mtime = os.path.getmtime(PERMISSIONS_FILE)
+            logger.info("[Permission] 权限配置已保存")
+        except Exception as e:
+            logger.error(f"[Permission] 保存配置失败: {e}")
+            raise
 
     def _get_default_config(self) -> Dict[str, Any]:
         """获取默认配置"""
@@ -147,6 +166,31 @@ class GroupPermissionManager:
 
         return plugin_default_features.get(feature_name, True)
 
+    def has_group_config(self, group_id) -> bool:
+        """判断群是否有显式配置"""
+        self._load_config()
+        group_id_str = self._get_group_id_str(group_id)
+        return group_id_str in self._config.get("groups", {})
+
+    def ensure_group(self, group_id) -> Dict[str, Any]:
+        """确保群配置节点存在"""
+        self._load_config()
+        group_id_str = self._get_group_id_str(group_id)
+        groups_config = self._config.setdefault("groups", {})
+        group_config = groups_config.setdefault(group_id_str, {})
+        group_config.setdefault("plugins", {})
+        group_config.setdefault("features", {})
+        return group_config
+
+    def set_all_plugins(self, group_id, enabled: bool):
+        """为指定群批量设置所有已知插件的开关"""
+        group_config = self.ensure_group(group_id)
+        default_plugins = self._config.get("default", {}).get("plugins", {})
+        existing_plugins = group_config.get("plugins", {})
+        plugin_names = set(default_plugins) | set(existing_plugins)
+        group_config["plugins"] = {name: enabled for name in plugin_names}
+        self._save_config()
+
     def get_group_config(self, group_id) -> Dict[str, Any]:
         """
         获取指定群的完整配置
@@ -154,6 +198,7 @@ class GroupPermissionManager:
         :param group_id: 群号
         :return: 配置字典
         """
+        self._load_config()
         group_id_str = self._get_group_id_str(group_id)
 
         # 基础配置

@@ -2,7 +2,6 @@
 # NcatBot 5.x 欢迎插件
 import logging
 import yaml
-import asyncio
 import random
 import aiofiles
 from datetime import datetime, timezone, timedelta
@@ -13,10 +12,9 @@ from ncatbot.plugin import BasePlugin
 from ncatbot.core import registrar
 from ncatbot.event.qq import NoticeEvent
 
-# 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+from common import ROOT_DIR
 from common.permissions import permission_manager
 
 # 北京时间时区
@@ -25,7 +23,7 @@ CN_TZ = timezone(timedelta(hours=8))
 
 def _now_beijing() -> str:
     """获取当前北京时间"""
-    return datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(timezone.utc).astimezone(CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _fmt_time(ts: str | None) -> str:
@@ -51,7 +49,7 @@ class Welcome(BasePlugin):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # 数据文件路径
-        self.data_dir = Path("/home/hjh/BOT/NCBOT/data/Welcome")
+        self.data_dir = ROOT_DIR / "data" / "Welcome"
         self.leave_count_file = self.data_dir / "leave_counts.yaml"
 
         # 配置文件路径
@@ -140,22 +138,20 @@ class Welcome(BasePlugin):
             # 机器人加入新群，自动添加到权限数据库
             logger.info(f"🤖 机器人加入新群: {group_id}")
             try:
-                # 检查是否已在本地 YAML 配置中
-                existing = permission_manager.get_group_config(str(group_id))
-                if not existing:
+                if not permission_manager.has_group_config(group_id):
                     # 新群，添加默认配置（全部允许）
-                    permission_manager.set_all_plugins(str(group_id), True)
+                    permission_manager.set_all_plugins(group_id, True)
                     logger.info(f"✅ 已自动添加群 {group_id} 到本地权限配置")
-
-                    # 发送入群通知
-                    await self.api.qq.post_group_msg(
-                        group_id=group_id,
-                        text="🎉 大家好！我是机器人，已成功加入本群。\n"
-                               "发送 帮助 查看可用功能。\n"
-                               "管理员可通过私聊管理本群权限。"
-                    )
                 else:
                     logger.info(f"📋 群 {group_id} 已存在于本地权限配置")
+
+                # 发送入群通知
+                await self.api.qq.post_group_msg(
+                    group_id=group_id,
+                    text="🎉 大家好！我是机器人，已成功加入本群。\n"
+                           "发送 帮助 查看可用功能。\n"
+                           "管理员可通过私聊管理本群权限。"
+                )
             except Exception as e:
                 logger.error(f"❌ 自动添加群 {group_id} 失败: {e}")
             return
@@ -181,7 +177,8 @@ class Welcome(BasePlugin):
             # 发送欢迎消息
             await self.api.qq.post_group_msg(
                 group_id=group_id,
-                text=f"[CQ:at,qq={user_id}] {welcome_msg}"
+                text=welcome_msg,
+                at=user_id,
             )
 
         # ---- 退群 ----

@@ -6,16 +6,42 @@
 - game_resources: 游戏资源表 - 存储游戏资源
 - ntqq_key: key 表 - 存储 cookie 等密钥
 """
-import os
-import json
 import logging
-import asyncio
 import aiohttp
 import time
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 
+from .config import ROOT_DIR
+
 logger = logging.getLogger(__name__)
+
+CORE_TABLES = ("resources", "game_resources", "ntqq_key")
+CORE_FTS_OBJECTS = (
+    "game_resources_fts",
+    "game_resources_ai",
+    "game_resources_ad",
+    "game_resources_au",
+)
+CANONICAL_INDEXES = {
+    "idx_game_resources_zh_name",
+    "idx_game_resources_en_name",
+    "idx_game_resources_updated_at",
+    "idx_game_resources_detail_url",
+    "idx_resources_name",
+    "idx_resources_created_at",
+    "idx_users_openid",
+    "idx_users_qq_id",
+    "idx_users_virtual_id",
+}
+REDUNDANT_GAME_RESOURCE_INDEXES = (
+    "idx_game_zh_name",
+    "idx_zh_name",
+    "idx_game_en_name",
+    "idx_en_name",
+    "idx_game_updated_at",
+    "idx_detail_url",
+)
 
 # 搜索缓存: {cache_key: (result, timestamp)}
 _search_cache: Dict[str, Any] = {}
@@ -41,6 +67,93 @@ class TursoResourceManager:
         self._local_mode = False  # 本地回退模式
         self._initialized = False
 
+    async def _object_exists(self, object_type: str, name: str) -> bool:
+        rows = await self._query(
+            "SELECT 1 FROM sqlite_master WHERE type = ? AND name = ? LIMIT 1",
+            (object_type, name),
+        )
+        return bool(rows)
+
+    async def _ensure_runtime_objects(self):
+        """轻量级确保核心运行对象存在，避免每次启动全量 DDL。"""
+        table_rows = await self._query(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?)",
+            CORE_TABLES,
+        )
+        existing_tables = {row[0] for row in table_rows}
+        if set(CORE_TABLES) - existing_tables:
+            logger.info("[DB Resource] 检测到核心表缺失，执行完整初始化...")
+            await self._init_tables()
+            return
+
+        index_rows = await self._query(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            tuple(CANONICAL_INDEXES),
+        )
+        existing_indexes = {row[0] for row in index_rows}
+        if CANONICAL_INDEXES - existing_indexes:
+            logger.info("[DB Resource] 检测到索引缺失，补齐规范索引...")
+            await self._init_indexes()
+
+        fts_rows = await self._query(
+            "SELECT name FROM sqlite_master WHERE name IN (?, ?, ?, ?)",
+            CORE_FTS_OBJECTS,
+        )
+        existing_fts_objects = {row[0] for row in fts_rows}
+        if set(CORE_FTS_OBJECTS) - existing_fts_objects:
+            logger.info("[DB Resource] 检测到 FTS5 对象缺失，补齐搜索对象...")
+            await self._init_fts5()
+
+        await self._drop_redundant_game_resource_indexes()
+
+    async def _drop_redundant_game_resource_indexes(self):
+        """清理历史遗留的重复索引，降低写入和维护开销。"""
+        rows = await self._query("PRAGMA index_list('game_resources')")
+        existing_indexes = {row[1] for row in rows}
+        removable_indexes = [
+            name for name in REDUNDANT_GAME_RESOURCE_INDEXES if name in existing_indexes
+        ]
+
+        if not removable_indexes:
+            return
+
+        for index_name in removable_indexes:
+            try:
+                await self._execute_sql(f"DROP INDEX IF EXISTS {index_name}")
+                logger.info(f"[DB Resource] 已清理冗余索引: {index_name}")
+            except Exception as e:
+                logger.warning(f"[DB Resource] 清理冗余索引失败 {index_name}: {e}")
+
+    def _build_result(self, row: List[Any]) -> Dict[str, Any]:
+        return {
+            "id": row[0],
+            "zh_name": row[1],
+            "en_name": row[2],
+            "image_url": row[3],
+            "version": row[4],
+            "updated_at": row[5],
+            "detail_url": row[6],
+            "has_link": bool(row[7]),
+        }
+
+    def _prefix_bounds(self, keyword: str):
+        return keyword, f"{keyword}\uffff"
+
+    def _dedupe_games(self, rows: List[List[Any]], limit: int) -> List[Dict[str, Any]]:
+        games: List[Dict[str, Any]] = []
+        seen_ids = set()
+        for row in rows:
+            if not row:
+                continue
+            game_id = row[0]
+            if game_id in seen_ids:
+                continue
+            seen_ids.add(game_id)
+            games.append(self._build_result(row))
+            if len(games) >= limit:
+                break
+        return games
+
     async def initialize(self):
         """异步初始化"""
         if self._initialized:
@@ -48,10 +161,12 @@ class TursoResourceManager:
 
         try:
             self._session = aiohttp.ClientSession()
-            # 测试连接
+            # 1. 测试连接
             await self._execute_sql("SELECT 1")
-            # 初始化表
-            await self._init_tables()
+
+            # 2. 轻量运行时维护，只检查必要对象并顺手清理冗余索引
+            await self._ensure_runtime_objects()
+
             logger.info("[DB Resource] Turso HTTP API 连接成功")
         except Exception as e:
             logger.error(f"[DB Resource] Turso 连接失败: {e}，切换到本地模式")
@@ -198,7 +313,7 @@ class TursoResourceManager:
             await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_game_resources_detail_url ON game_resources(detail_url)")
             
             # game_name 索引 (优化 game_name 表的高频查询)
-            await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_game_name_zh_name ON game_name(zh_name)")
+            # await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_game_name_zh_name ON game_name(zh_name)")
             
             # users 索引
             await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_users_openid ON users(openid)")
@@ -208,9 +323,6 @@ class TursoResourceManager:
             # resources 索引
             await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_resources_name ON resources(name)")
             await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_resources_created_at ON resources(created_at DESC)")
-            
-            # ntqq_key 索引
-            await self._execute_sql("CREATE INDEX IF NOT EXISTS idx_ntqq_key_name ON ntqq_key(name)")
             
             logger.info("[DB Resource] 数据库索引初始化完成")
         except Exception as e:
@@ -235,9 +347,8 @@ class TursoResourceManager:
     def _init_local_storage(self):
         """初始化本地存储（回退模式）"""
         import sqlite3
-        from pathlib import Path
 
-        db_path = Path("/home/hjh/BOT/NCBOT/data/resources.db")
+        db_path = ROOT_DIR / "data" / "resources.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._local_conn = sqlite3.connect(str(db_path), check_same_thread=False)
@@ -688,6 +799,68 @@ class TursoResourceManager:
         return result
 
     # ========== 游戏资源相关方法 ==========
+    async def get_game_resource_by_id(self, game_id: int) -> Optional[Dict[str, Any]]:
+        """根据 ID 获取完整的游戏资源详情
+
+        Args:
+            game_id: 游戏 ID
+
+        Returns:
+            游戏资源数据，不存在则返回 None
+        """
+        await self.initialize()
+
+        sql = """
+            SELECT id, platform, genre, zh_name, en_name, image_url, version, details, 
+                   password, baidu_url, baidu_code, quark_url, quark_code, uc_url, uc_code,
+                   online_url, online_code, patch_url, online_at, detail_url, updated_at,
+                   pan123_url, pan123_code, mobile_url, mobile_code, tianyi_url, tianyi_code,
+                   xunlei_url, xunlei_code
+            FROM game_resources 
+            WHERE id = ?
+        """
+
+        if self._local_mode:
+            self._local_cursor.execute(sql, (game_id,))
+            row = self._local_cursor.fetchone()
+        else:
+            result = await self._query(sql, (game_id,))
+            row = result[0] if result else None
+
+        if row:
+            return {
+                "id": row[0],
+                "platform": row[1],
+                "genre": row[2],
+                "zh_name": row[3],
+                "en_name": row[4],
+                "image_url": row[5],
+                "version": row[6],
+                "details": row[7],
+                "password": row[8],
+                "baidu_url": row[9],
+                "baidu_code": row[10],
+                "quark_url": row[11],
+                "quark_code": row[12],
+                "uc_url": row[13],
+                "uc_code": row[14],
+                "online_url": row[15],
+                "online_code": row[16],
+                "patch_url": row[17],
+                "online_at": row[18],
+                "detail_url": row[19],
+                "updated_at": row[20],
+                "pan123_url": row[21],
+                "pan123_code": row[22],
+                "mobile_url": row[23],
+                "mobile_code": row[24],
+                "tianyi_url": row[25],
+                "tianyi_code": row[26],
+                "xunlei_url": row[27],
+                "xunlei_code": row[28]
+            }
+        return None
+
     async def get_game_resource(self, name: str) -> Optional[Dict[str, Any]]:
         """从数据库获取游戏资源
 
@@ -787,7 +960,7 @@ class TursoResourceManager:
                 existing = self._local_cursor.fetchone()
                 
                 if existing:
-                    resource_id, db_zh_name = existing
+                    resource_id, _ = existing
                     # 更新现有记录
                     update_fields = []
                     update_values = []
@@ -816,10 +989,9 @@ class TursoResourceManager:
                 
                 self._local_conn.commit()
             else:
-                # Turso 模式：合并查询并利用索引 (强制使用 detail_url 索引加速查重)
+                # Turso 模式：让优化器自行选择 OR 多索引计划
                 query_sql = """
                     SELECT id, zh_name FROM game_resources 
-                    INDEXED BY idx_game_resources_detail_url 
                     WHERE detail_url = ? OR zh_name = ? 
                     LIMIT 1
                 """
@@ -827,7 +999,7 @@ class TursoResourceManager:
                 existing = existing_result[0] if existing_result else None
                 
                 if existing:
-                    resource_id, db_zh_name = existing
+                    resource_id, _ = existing
                     # 更新现有记录
                     update_sets = []
                     values = []
@@ -872,7 +1044,7 @@ class TursoResourceManager:
         """
         await self.initialize()
 
-        sql = "DELETE FROM game_resources INDEXED BY idx_game_resources_zh_name WHERE zh_name = ?"
+        sql = "DELETE FROM game_resources WHERE zh_name = ?"
 
         try:
             if self._local_mode:
@@ -940,32 +1112,40 @@ class TursoResourceManager:
             logger.debug(f"[DB Cache] 缓存命中: {keyword}")
             return cached_result
 
-        rows = []
+        # 定义搜索列表需要的字段（减少数据传输和读取开销）
+        # 增加 has_link 逻辑判断，方便前端/插件过滤，无需拉取所有大字段
+        list_fields = """
+            id, zh_name, en_name, image_url, version, updated_at, detail_url,
+            (CASE WHEN baidu_url IS NOT NULL OR quark_url IS NOT NULL OR uc_url IS NOT NULL
+                  OR pan123_url IS NOT NULL OR xunlei_url IS NOT NULL OR mobile_url IS NOT NULL
+                  OR online_url IS NOT NULL THEN 1 ELSE 0 END) as has_link
+        """
+        fts_list_fields = """
+            gr.id, gr.zh_name, gr.en_name, gr.image_url, gr.version, gr.updated_at, gr.detail_url,
+            (CASE WHEN gr.baidu_url IS NOT NULL OR gr.quark_url IS NOT NULL OR gr.uc_url IS NOT NULL
+                  OR gr.pan123_url IS NOT NULL OR gr.xunlei_url IS NOT NULL OR gr.mobile_url IS NOT NULL
+                  OR gr.online_url IS NOT NULL THEN 1 ELSE 0 END) as has_link
+        """
+
+        rows: List[List[Any]] = []
         is_short = False
         
         # 2. 尝试使用 FTS5 MATCH 搜索 (性能最高，消耗最低，支持分词)
         try:
-            # 清理关键词并构造 FTS5 查询语句
-            # 使用引号包裹以支持精确匹配，添加 * 支持前缀匹配
             import re
             clean_keyword = re.sub(r'[^\w\s]', ' ', keyword).strip()
-            
-            # 如果关键词太短（小于2个字符），且不是数字，则不进行全表模糊搜索
             is_short = len(clean_keyword) < 2 and not clean_keyword.isdigit()
             
             if clean_keyword:
+                # 优化 FTS5 语法：支持短语匹配和前缀匹配
                 fts_query = f'"{clean_keyword}" OR {clean_keyword}*'
                 
-                sql_fts = """
-                    SELECT gr.id, gr.platform, gr.genre, gr.zh_name, gr.en_name, gr.image_url, gr.version, gr.details,
-                           gr.password, gr.baidu_url, gr.baidu_code, gr.quark_url, gr.quark_code, gr.uc_url, gr.uc_code,
-                           gr.online_url, gr.online_code, gr.patch_url, gr.online_at, gr.detail_url, gr.updated_at,
-                           gr.pan123_url, gr.pan123_code, gr.mobile_url, gr.mobile_code, gr.tianyi_url, gr.tianyi_code,
-                           gr.xunlei_url, gr.xunlei_code
+                sql_fts = f"""
+                    SELECT {fts_list_fields}
                     FROM game_resources gr
                     JOIN game_resources_fts fts ON gr.id = fts.rowid
                     WHERE game_resources_fts MATCH ?
-                    ORDER BY rank, updated_at DESC
+                    ORDER BY rank, gr.updated_at DESC
                     LIMIT ?
                 """
                 
@@ -982,36 +1162,38 @@ class TursoResourceManager:
 
         # 3. 如果 FTS5 未命中，回退到传统 LIKE 模糊搜索 (兜底逻辑)
         if not rows and not is_short:
-            # 首先尝试前缀匹配 (可以利用索引，速度快)
-            prefix_pattern = f"{keyword}%"
-            sql_prefix = """
-                SELECT id, platform, genre, zh_name, en_name, image_url, version, details,
-                       password, baidu_url, baidu_code, quark_url, quark_code, uc_url, uc_code,
-                       online_url, online_code, patch_url, online_at, detail_url, updated_at,
-                       pan123_url, pan123_code, mobile_url, mobile_code, tianyi_url, tianyi_code,
-                       xunlei_url, xunlei_code
+            # 优先拆分 zh/en 前缀匹配，避免 OR + ORDER BY 退化成大扫描
+            prefix_start, prefix_end = self._prefix_bounds(keyword)
+            sql_zh_prefix = f"""
+                SELECT {list_fields}
                 FROM game_resources
-                INDEXED BY idx_game_resources_zh_name
-                WHERE zh_name LIKE ? OR en_name LIKE ?
-                ORDER BY updated_at DESC
+                WHERE zh_name >= ? AND zh_name < ?
+                LIMIT ?
+            """
+            sql_en_prefix = f"""
+                SELECT {list_fields}
+                FROM game_resources
+                WHERE en_name >= ? AND en_name < ?
                 LIMIT ?
             """
 
-            if self._local_mode:
-                self._local_cursor.execute(sql_prefix, (prefix_pattern, prefix_pattern, limit))
-                rows = self._local_cursor.fetchall()
-            else:
-                rows = await self._query(sql_prefix, (prefix_pattern, prefix_pattern, limit))
+            zh_rows = (
+                self._local_cursor.execute(sql_zh_prefix, (prefix_start, prefix_end, limit)).fetchall()
+                if self._local_mode
+                else await self._query(sql_zh_prefix, (prefix_start, prefix_end, limit))
+            )
+            en_rows = (
+                self._local_cursor.execute(sql_en_prefix, (prefix_start, prefix_end, limit)).fetchall()
+                if self._local_mode
+                else await self._query(sql_en_prefix, (prefix_start, prefix_end, limit))
+            )
+            rows = sorted(list(zh_rows) + list(en_rows), key=lambda row: row[5] or "", reverse=True)
 
-            # 如果前缀匹配结果太少，且关键词长度足够，才尝试全模糊匹配 (全表扫描)
-            if len(rows) < 3 and len(keyword) >= 3: # 提高到 3 个字符才执行全模糊
+            # 只有关键词足够长时才允许全模糊兜底，避免 2 字词把库扫穿
+            if len(rows) < 3 and len(clean_keyword) >= 3:
                 full_pattern = f"%{keyword}%"
-                sql_full = """
-                     SELECT id, platform, genre, zh_name, en_name, image_url, version, details,
-                            password, baidu_url, baidu_code, quark_url, quark_code, uc_url, uc_code,
-                            online_url, online_code, patch_url, online_at, detail_url, updated_at,
-                            pan123_url, pan123_code, mobile_url, mobile_code, tianyi_url, tianyi_code,
-                            xunlei_url, xunlei_code
+                sql_full = f"""
+                     SELECT {list_fields}
                      FROM game_resources
                     WHERE (zh_name LIKE ? OR en_name LIKE ?)
                       AND zh_name NOT LIKE ?
@@ -1020,48 +1202,24 @@ class TursoResourceManager:
                     LIMIT ?
                 """
 
-                if self._local_mode:
-                    self._local_cursor.execute(sql_full, (full_pattern, full_pattern, prefix_pattern, prefix_pattern, limit - len(rows)))
-                    additional_rows = self._local_cursor.fetchall()
-                else:
-                    additional_rows = await self._query(sql_full, (full_pattern, full_pattern, prefix_pattern, prefix_pattern, limit - len(rows)))
+                remaining_limit = max(limit - len(rows), 0)
+                additional_rows = []
+                if remaining_limit > 0:
+                    if self._local_mode:
+                        self._local_cursor.execute(
+                            sql_full,
+                            (full_pattern, full_pattern, f"{keyword}%", f"{keyword}%", remaining_limit),
+                        )
+                        additional_rows = self._local_cursor.fetchall()
+                    else:
+                        additional_rows = await self._query(
+                            sql_full,
+                            (full_pattern, full_pattern, f"{keyword}%", f"{keyword}%", remaining_limit),
+                        )
 
-                rows = list(rows) + list(additional_rows)
+                rows = sorted(list(rows) + list(additional_rows), key=lambda row: row[5] or "", reverse=True)
 
-        games = []
-        for row in rows:
-            # ... existing game dict construction ...
-            games.append({
-                "id": row[0],
-                "platform": row[1],
-                "genre": row[2],
-                "zh_name": row[3],
-                "en_name": row[4],
-                "image_url": row[5],
-                "version": row[6],
-                "details": row[7],
-                "password": row[8],
-                "baidu_url": row[9],
-                "baidu_code": row[10],
-                "quark_url": row[11],
-                "quark_code": row[12],
-                "uc_url": row[13],
-                "uc_code": row[14],
-                "online_url": row[15],
-                "online_code": row[16],
-                "patch_url": row[17],
-                "online_at": row[18],
-                "detail_url": row[19],
-                "updated_at": row[20],
-                "pan123_url": row[21],
-                "pan123_code": row[22],
-                "mobile_url": row[23],
-                "mobile_code": row[24],
-                "tianyi_url": row[25],
-                "tianyi_code": row[26],
-                "xunlei_url": row[27],
-                "xunlei_code": row[28]
-            })
+        games = self._dedupe_games(rows, limit)
 
         # 存入缓存
         self._set_cache(cache_key, games)
@@ -1079,6 +1237,7 @@ class TursoResourceManager:
             cookie 字符串，不存在则返回空字符串
         """
         await self.initialize()
+        _ = key_name
         
         sql = "SELECT xydj FROM ntqq_key WHERE id = 1"
         
@@ -1108,6 +1267,7 @@ class TursoResourceManager:
             是否成功
         """
         await self.initialize()
+        _ = key_name
         
         sql = """
             INSERT INTO ntqq_key (id, xydj, updated_at) 

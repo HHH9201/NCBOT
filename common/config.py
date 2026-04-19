@@ -1,33 +1,70 @@
 # /home/hjh/BOT/NCBOT/common/config.py
+import copy
 import os
-import yaml
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict
+
+import yaml
+from dotenv import load_dotenv
+
+
+def _detect_root_dir() -> Path:
+    env_root = os.getenv("NCBOT_ROOT")
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+    return Path(__file__).resolve().parent.parent
+
+
+def _split_csv(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
 
 # 项目根目录
-ROOT_DIR = Path("/home/hjh/BOT/NCBOT")
+ROOT_DIR = _detect_root_dir()
+ENV_FILE = ROOT_DIR / ".env"
 CONFIG_FILE = ROOT_DIR / "config.yaml"
+
+if ENV_FILE.exists():
+    load_dotenv(ENV_FILE)
+
 
 # 默认配置
 DEFAULT_CONFIG = {
     "napcat": {
-        "url": "http://101.35.164.122:3006",
-        "token": "he031701"
+        "url": os.getenv("NAPCAT_URL", "http://127.0.0.1:3001"),
+        "token": os.getenv("NAPCAT_TOKEN", ""),
     },
     "siliconflow": {
         "url": "https://api.siliconflow.cn/v1/chat/completions",
-        "api_key": "sk-ixmsswryqnmuyifjewdetqnjewdetq",
-        "model": "moonshotai/Kimi-K2-Instruct-0905"
+        "api_key": os.getenv("SILICONFLOW_API_KEY", ""),
+        "model": "moonshotai/Kimi-K2-Instruct-0905",
+    },
+    "modelscope": {
+        "api_key": os.getenv("MODELSCOPE_API_KEY", ""),
+        "model": "ZhipuAI/GLM-4.7-Flash",
+    },
+    "backend": {
+        "url": os.getenv("BACKEND_URL", "http://127.0.0.1:8978"),
+    },
+    "app": {
+        "id": os.getenv("APP_ID", "card_sender"),
+        "secret": os.getenv("APP_SECRET", ""),
     },
     "database": {
-        "path": str(ROOT_DIR / "mydb" / "mydb.db")
+        "path": str(ROOT_DIR / "mydb" / "mydb.db"),
     },
-    "admin_qq": ["123456789"]
+    "paths": {
+        "root": str(ROOT_DIR),
+        "data_dir": str(ROOT_DIR / "data"),
+    },
+    "admin_qq": _split_csv(os.getenv("ADMIN_QQ")),
 }
 
 class Config:
     def __init__(self):
-        self._config = DEFAULT_CONFIG.copy()
+        self._config = copy.deepcopy(DEFAULT_CONFIG)
         self._load_config()
 
     def _load_config(self):

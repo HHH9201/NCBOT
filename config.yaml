@@ -2,7 +2,7 @@ adapters:
 - config:
     check_napcat_update: true
     enable_webui: false
-    remote_mode: true
+    skip_setup: true
     report_forward_message_detail: true
     report_self_message: false
     stop_napcat: false
@@ -10,7 +10,7 @@ adapters:
     webui_uri: http://localhost:6099
     ws_listen_ip: localhost
     ws_token: he031701
-    ws_uri: ws://101.35.164.122:3001
+    ws_uri: ws://localhost:3001
   enabled: true
   platform: qq
   type: napcat

@@ -22,6 +22,9 @@ class TraeAdmin(NcatBotPlugin):
     # 匹配模式：6位数字 ID + "增加上限" 或 "减少上限" + 数字
     # 例如：666666增加上限10个
     REWARD_PATTERN = re.compile(r'^(\d{6})(增加上限|减少上限)(\d+)个?$')
+    # 匹配模式：6位旧ID + "修改为" + 6位新ID
+    # 例如：123456修改为456789
+    MODIFY_VIRTUAL_ID_PATTERN = re.compile(r'^(\d{6})\s*修改为\s*(\d{6})$')
 
     async def _execute_turso_sql(self, sql: str, args: list = None):
         """执行 Turso SQL (HTTP API)"""
@@ -122,6 +125,46 @@ class TraeAdmin(NcatBotPlugin):
             logger.error(f"处理奖励指令失败: {e}")
             await event.reply(rtf=MessageArray([PlainText(text=f"❌ 操作失败: {str(e)}")]))
 
+    async def handle_modify_virtual_id_command(self, event, old_virtual_id, new_virtual_id):
+        """处理 virtual_id 修改逻辑（防重复）"""
+        try:
+            if old_virtual_id == new_virtual_id:
+                await event.reply(rtf=MessageArray([PlainText(text="⚠️ 新旧 virtual_id 相同，无需修改")]))
+                return
+
+            # 1. 检查旧 ID 是否存在
+            old_rows = await self._query_turso_sql(
+                "SELECT openid FROM users WHERE virtual_id = ?",
+                [old_virtual_id]
+            )
+            if not old_rows:
+                await event.reply(rtf=MessageArray([PlainText(text=f"❌ 未找到旧 ID: {old_virtual_id}")]))
+                return
+
+            # 2. 检查新 ID 是否已存在（重复则不修改）
+            new_rows = await self._query_turso_sql(
+                "SELECT openid FROM users WHERE virtual_id = ?",
+                [new_virtual_id]
+            )
+            if new_rows:
+                await event.reply(rtf=MessageArray([
+                    PlainText(text=f"⚠️ 新 ID 已存在（重复），未执行修改：{new_virtual_id}")
+                ]))
+                return
+
+            # 3. 执行更新
+            await self._execute_turso_sql(
+                "UPDATE users SET virtual_id = ? WHERE virtual_id = ?",
+                [new_virtual_id, old_virtual_id]
+            )
+
+            await event.reply(rtf=MessageArray([
+                PlainText(text=f"✅ 修改成功：{old_virtual_id} -> {new_virtual_id}")
+            ]))
+        except Exception as e:
+            logger.error(f"处理 virtual_id 修改指令失败: {e}")
+            await event.reply(rtf=MessageArray([PlainText(text=f"❌ 修改失败: {str(e)}")]))
+
     @registrar.on_group_message()
     async def on_group_message(self, event: GroupMessageEvent):
         await self._process_message(event)
@@ -136,6 +179,15 @@ class TraeAdmin(NcatBotPlugin):
             return
 
         msg = event.raw_message.strip()
+
+        # 1) 处理 virtual_id 修改命令：123456修改为456789
+        modify_match = self.MODIFY_VIRTUAL_ID_PATTERN.match(msg)
+        if modify_match:
+            old_virtual_id, new_virtual_id = modify_match.groups()
+            await self.handle_modify_virtual_id_command(event, old_virtual_id, new_virtual_id)
+            return
+
+        # 2) 处理奖励命令：123456增加上限10个
         match = self.REWARD_PATTERN.match(msg)
         if match:
             virtual_id, action, amount = match.groups()

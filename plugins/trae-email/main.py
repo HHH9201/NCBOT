@@ -8,6 +8,7 @@ Trae Email 账号分配插件
 import logging
 import asyncio
 import os
+import re
 from datetime import datetime
 from ncatbot.plugin import NcatBotPlugin
 from ncatbot.event.qq import GroupMessageEvent
@@ -143,49 +144,60 @@ class TraeEmailManager:
                 return rows
         return []
 
-    async def get_unassigned_account(self) -> Optional[Dict[str, Any]]:
-        """获取一个未分配的账号"""
+    async def get_unassigned_accounts(self, count: int = 1) -> list[Dict[str, Any]]:
+        """获取指定数量的未分配账号"""
         await self.initialize()
 
-        sql = """
+        sql = f"""
             SELECT id, account, password 
             FROM email_accounts 
             WHERE status = 'available' 
             ORDER BY id ASC 
-            LIMIT 1
+            LIMIT {count}
         """
         rows = await self._query_sql(sql)
 
-        if rows:
-            return {
-                "id": rows[0][0],
-                "email": rows[0][1],
-                "key": rows[0][2]
-            }
-        return None
+        results = []
+        for row in rows:
+            results.append({
+                "id": row[0],
+                "email": row[1],
+                "key": row[2]
+            })
+        return results
 
-    async def assign_account(self, account_id: int, user_id: str) -> bool:
-        """标记账号为已分配"""
+    async def assign_accounts(self, account_ids: list[int], user_id: str) -> bool:
+        """批量标记账号为已分配"""
+        if not account_ids:
+            return True
+            
         await self.initialize()
 
         from datetime import datetime
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-        sql = """
+        # 构建占位符 ?, ?, ?
+        placeholders = ", ".join(["?"] * len(account_ids))
+        sql = f"""
             UPDATE email_accounts 
             SET status = 'used', 
                 used_at = ?,
                 qq_id = ?
-            WHERE id = ?
+            WHERE id IN ({placeholders})
         """
 
         try:
-            await self._execute_sql(sql, [now, user_id, account_id])
-            logger.info(f"[TraeEmail] 账号 {account_id} 已分配给用户 {user_id}")
+            await self._execute_sql(sql, [now, user_id] + account_ids)
+            logger.info(f"[TraeEmail] {len(account_ids)} 个账号已分配给用户 {user_id}")
             return True
         except Exception as e:
-            logger.error(f"[TraeEmail] 分配账号失败: {e}")
+            logger.error(f"[TraeEmail] 批量分配账号失败: {e}")
             return False
+
+    async def get_unassigned_account(self) -> Optional[Dict[str, Any]]:
+        """获取一个未分配的账号"""
+        accounts = await self.get_unassigned_accounts(1)
+        return accounts[0] if accounts else None
 
     async def add_account(self, email: str, key: str) -> bool:
         """添加新账号到数据库"""
@@ -257,87 +269,95 @@ class TraeEmail(NcatBotPlugin):
     async def on_group_message(self, event: GroupMessageEvent):
         raw_msg = event.raw_message.strip()
 
-        # 处理"给我一个账号"命令
-        if raw_msg == "给一个账号":
+        # 处理"给X个账号"命令
+        match = re.match(r"^给(\d+)个账号$", raw_msg)
+        if match or raw_msg == "给一个账号":
+            # 获取请求数量
+            if match:
+                count = int(match.group(1))
+            else:
+                count = 1
+
+            if count <= 0:
+                return
+            if count > 20:
+                await self.api.qq.post_group_msg(
+                    group_id=event.group_id,
+                    text="❌ 单次请求账号数量不能超过 20 个"
+                )
+                return
+
             # 检查用户是否在白名单中
             user_id = str(event.user_id)
             if user_id not in self.ALLOWED_USERS:
                 logger.warning(f"[TraeEmail] 用户 {user_id} 尝试获取账号但被拒绝（不在白名单中）")
-                await event.reply(
-                    rtf=MessageArray([
-                        PlainText(text="❌ 你没有权限获取账号")
-                    ])
-                )
                 return
 
             try:
                 # 先检查账号数量，不足时自动注册
                 unassigned_count = await email_manager.get_unassigned_count()
-                if unassigned_count < 30:
-                    logger.info(f"[TraeEmail] 账号数量不足({unassigned_count}<30)，开始自动注册...")
+                if unassigned_count < count + 5:
+                    logger.info(f"[TraeEmail] 账号数量不足({unassigned_count}<{count+5})，开始自动注册...")
                     await self.check_and_register_accounts()
 
                 # 获取未分配的账号
-                account = await email_manager.get_unassigned_account()
+                accounts = await email_manager.get_unassigned_accounts(count)
 
-                if not account:
-                    await event.reply(
-                        rtf=MessageArray([
-                            PlainText(text="❌ 暂无可用账号，请联系管理员添加")
-                        ])
+                if not accounts:
+                    await self.api.qq.post_group_msg(
+                        group_id=event.group_id,
+                        text="❌ 暂无可用账号，请联系管理员添加"
                     )
                     return
 
+                actual_count = len(accounts)
+                
                 # 标记为已分配
-                success = await email_manager.assign_account(
-                    account["id"],
+                account_ids = [acc["id"] for acc in accounts]
+                success = await email_manager.assign_accounts(
+                    account_ids,
                     str(event.user_id)
                 )
 
                 if success:
-                    await event.reply(
-                        rtf=MessageArray([
-                            PlainText(
-                                text=f"邮箱：{account['email']}\n"
-                                f"密码：{account['key']}"
-                            )
-                        ])
+                    # 精简格式：邮箱： {email}密码： {key}
+                    reply_text = ""
+                    for acc in accounts:
+                        reply_text += f"邮箱： {acc['email']}密码： {acc['key']} \n"
+
+                    await self.api.qq.post_group_msg(
+                        group_id=event.group_id,
+                        text=reply_text.strip()
                     )
                 else:
-                    await event.reply(
-                        rtf=MessageArray([
-                            PlainText(text="❌ 账号分配失败，请稍后重试")
-                        ])
+                    await self.api.qq.post_group_msg(
+                        group_id=event.group_id,
+                        text="❌ 账号分配失败，请稍后重试"
                     )
 
             except Exception as e:
                 logger.error(f"[TraeEmail] 处理账号请求失败: {e}")
-                await event.reply(
-                    rtf=MessageArray([
-                        PlainText(text="❌ 系统错误，请稍后重试")
-                    ])
+                await self.api.qq.post_group_msg(
+                    group_id=event.group_id,
+                    text="❌ 系统错误，请稍后重试"
                 )
 
         # 处理"账号统计"命令（管理员功能）
         elif raw_msg == "账号统计":
             try:
                 stats = await email_manager.get_stats()
-                await event.reply(
-                    rtf=MessageArray([
-                        PlainText(
-                            text=f"📊 账号统计\n\n"
-                            f"总账号数：{stats['total']}\n"
-                            f"已分配：{stats['assigned']}\n"
-                            f"未分配：{stats['unassigned']}"
-                        )
-                    ])
+                await self.api.qq.post_group_msg(
+                    group_id=event.group_id,
+                    text=f"📊 账号统计\n\n"
+                         f"总账号数：{stats['total']}\n"
+                         f"已分配：{stats['assigned']}\n"
+                         f"未分配：{stats['unassigned']}"
                 )
             except Exception as e:
                 logger.error(f"[TraeEmail] 获取统计失败: {e}")
-                await event.reply(
-                    rtf=MessageArray([
-                        PlainText(text="❌ 获取统计失败")
-                    ])
+                await self.api.qq.post_group_msg(
+                    group_id=event.group_id,
+                    text="❌ 获取统计失败"
                 )
 
     async def on_load(self):

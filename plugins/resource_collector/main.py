@@ -4,42 +4,24 @@
 咸鱼单机（仅数据库版）
 """
 import re
-import os
 import time
 import json
 import asyncio
 import logging
-import httpx
-from typing import Optional, List, Dict, Any, Tuple
-from pathlib import Path
+from typing import Any
 from ncatbot.plugin import NcatBotPlugin
 from ncatbot.event.qq import GroupMessageEvent
 from ncatbot.types import PlainText, Reply, MessageArray
 from ncatbot.core.registry import registrar
-from dotenv import load_dotenv
-
-# 加载根目录 .env 配置
-env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
-load_dotenv(env_path)
 
 # 引入全局服务和配置
 from common import (
-    GLOBAL_CONFIG, load_yaml, save_yaml, DEFAULT_HEADERS, db_manager, AsyncHttpClient,
+    db_manager,
     convert_roman_to_arabic
 )
 from common.db_permissions import db_permission_manager
 
-# 配置日志
-logging.basicConfig(
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    level=logging.INFO
-)
-
-# 快速HTTP客户端
-FAST_HTTP = AsyncHttpClient(retry_count=3, retry_delay=1.0, timeout=30)
-
-CACHE_FILE = Path(__file__).parent / "tool" / "cache" / "game_name_cache.yaml"
-_title_cache = load_yaml(CACHE_FILE)
+logger = logging.getLogger(__name__)
 
 # -------------------- 缓存与并发控制 --------------------
 CACHE_TTL = 3600
@@ -90,7 +72,7 @@ def init_cache_db():
         db_manager.execute_update(sql)
         _db_initialized = True
     except Exception as e:
-        logging.error(f"[DB] 初始化缓存表失败: {e}")
+        logger.error(f"[DB] 初始化缓存表失败: {e}")
 
 async def search_game_in_db(keyword: str) -> list:
     """从数据库搜索游戏"""
@@ -99,26 +81,21 @@ async def search_game_in_db(keyword: str) -> list:
         cloud_games = await db_permission_manager.search_game_resources(keyword)
         if cloud_games:
             for game_data in cloud_games:
-                # 检查是否有任何有效的网盘链接
-                has_link = False
-                for p in ["baidu", "quark", "uc", "online", "pan123", "mobile", "tianyi", "xunlei"]:
-                    if game_data.get(f"{p}_url"):
-                        has_link = True
-                        break
-                
-                if not has_link: continue
+                # 使用数据库返回的 has_link 字段判断
+                if not game_data.get("has_link"): 
+                    continue
 
                 game = {
                     "title": game_data.get("zh_name", ""),
                     "url": game_data.get("detail_url", ""),
                     "img": game_data.get("image_url", ""),
-                    "password": game_data.get("password", ""),
                     "updated_at": game_data.get("updated_at", ""),
-                    "from_db": True
+                    "from_db": True,
+                    "id": game_data.get("id")
                 }
                 games.append(game)
     except Exception as e:
-        logging.error(f"[DB] 搜索游戏失败: {e}")
+        logger.error(f"[DB] 搜索游戏失败: {e}")
     return games
 
 async def get_cache(key: str, cache_type: str):
@@ -189,7 +166,7 @@ async def search_game(game_name: str):
     data = await get_cache(game_name, "search")
     if data: return data[0], data[1]
 
-    english_keyword, chinese_display = extract_english_name(game_name)
+    english_keyword, _chinese_display = extract_english_name(game_name)
     games = await search_game_in_db(english_keyword)
     if not games: games = await search_game_in_db(game_name)
 
@@ -230,7 +207,7 @@ class Xydj(NcatBotPlugin):
         init_cache_db()
 
     async def on_load(self):
-        print(f"{self.name} 插件已加载，仅数据库模式，版本: {self.version}")
+        logger.info("%s 插件已加载，仅数据库模式，版本: %s", self.name, self.version)
 
     def _cleanup(self, group_id):
         if group_id in self.sessions:
@@ -258,7 +235,7 @@ class Xydj(NcatBotPlugin):
             else:
                 await event.reply(rtf=MessageArray([Reply(id=event.message_id), PlainText(text="❌ 很抱歉，数据库中暂无该资源的有效链接。")]))
         except Exception as e:
-            logging.error(f"处理资源失败: {e}")
+            logger.error("处理资源失败: %s", e)
             await event.reply(rtf=MessageArray([Reply(id=event.message_id), PlainText(text="处理失败，请稍后重试")]))
 
     async def _get_resource_content(self, chinese_display, db_games):
@@ -267,29 +244,30 @@ class Xydj(NcatBotPlugin):
         data = db_games[0]
         lines = []
         
-        password = data.get('password')
+        # 核心优化：直接使用 ID 拉取详情
+        res = None
+        if data.get('id'):
+            res = await db_permission_manager.get_game_resource_by_id(data['id'])
+        
+        if not res:
+            # 兜底：按标题查
+            res = await db_permission_manager.get_game_resource(data.get('title'))
+            
+        if not res: return None
+            
+        password = res.get('password')
         if password: lines.append(f"解压密码: 【{password}】")
             
         platforms = [("baidu", "百度"), ("quark", "夸克"), ("uc", "UC"), ("online", "联机版"), 
                      ("pan123", "123"), ("mobile", "移动"), ("tianyi", "天翼"), ("xunlei", "迅雷"), ("patch", "联机补丁")]
         
-        # 尝试从字段构建
-        found_any = False
-        for prefix, name in platforms:
-            url = await db_permission_manager._query(f"SELECT {prefix}_url, {prefix}_code FROM game_resources WHERE zh_name = ?", (data['title'],))
-            # 注意：db_games 里的数据是 search_game_in_db 查出来的，它没有返回所有字段
-            # 重新查一遍详情
-            res = await db_permission_manager.get_game_resource(data['title'])
-            if res:
-                for p_prefix, p_name in platforms:
-                    p_url = res.get(f"{p_prefix}_url")
-                    p_code = res.get(f"{p_prefix}_code")
-                    if p_url:
-                        found_any = True
-                        line = f"{p_name}网盘: {p_url}"
-                        if p_code: line += f" (提取码: {p_code})"
-                        lines.append(line)
-                break # 查到一次详情就够了
+        for p_prefix, p_name in platforms:
+            p_url = res.get(f"{p_prefix}_url")
+            p_code = res.get(f"{p_prefix}_code")
+            if p_url:
+                line = f"{p_name}网盘: {p_url}"
+                if p_code: line += f" (提取码: {p_code})"
+                lines.append(line)
 
         if not lines: return None
         final = [f"【单机版】\n", f"游戏名字：{chinese_display}\n"]

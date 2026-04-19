@@ -7,37 +7,20 @@
 - 搜索到的游戏插入数据库
 """
 import re
-import os
-import time
-import json
 import asyncio
 import logging
-from typing import Optional, List, Dict, Any, Tuple
-from pathlib import Path
 from bs4 import BeautifulSoup
 from ncatbot.plugin import NcatBotPlugin
 from ncatbot.event.qq import GroupMessageEvent
 from ncatbot.types import PlainText, Reply, MessageArray
-from ncatbot.types.qq import ForwardConstructor
 from ncatbot.core.registry import registrar
-from dotenv import load_dotenv
-
-# 加载根目录 .env 配置
-env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
-load_dotenv(env_path)
 
 # 引入全局服务和配置
 from common import (
-    GLOBAL_CONFIG, load_yaml, save_yaml,
-    DEFAULT_HEADERS, db_manager, AsyncHttpClient
+    AsyncHttpClient,
 )
 from common.db_permissions import db_permission_manager
-
-# 配置更清爽的日志格式，去掉进程和线程信息
-logging.basicConfig(
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    level=logging.INFO
-)
+logger = logging.getLogger(__name__)
 
 # Cookie 缓存
 _XYDJ_COOKIE = None
@@ -65,7 +48,7 @@ RE_PASSWORD_PATTERN = re.compile(r'解压密码[:：]\s*([^\s\u4e00-\u9fa5]{4,})
 RE_RUSSIAN_DATE = re.compile(r"(\d{1,2}\s+[а-яА-Я]+\s+\d{4},\s*\d{1,2}:\d{2})")
 RE_CQ_CODE = re.compile(r'\[CQ:[^\]]+\]')
 
-async def save_game_to_db(keyword: str, game: dict, detail_info: list = None, web_updated_at: str = ""):
+async def save_game_to_db(_keyword: str, game: dict, detail_info: list = None, web_updated_at: str = ""):
     """保存游戏信息到数据库"""
     try:
         decompress_password = ""
@@ -121,10 +104,11 @@ async def save_game_to_db(keyword: str, game: dict, detail_info: list = None, we
         )
         print(f"[DB] 保存游戏到数据库: {game.get('title', '')}, 字段: {list(save_data.keys())}")
     except Exception as e:
-        logging.error(f"[DB] 保存游戏到数据库失败: {e}")
+        logger.error(f"[DB] 保存游戏到数据库失败: {e}")
 
 async def extract_download_info(game_url: str, skip_cache: bool = False):
     """从游戏详情页提取下载信息"""
+    _ = skip_cache
     async with SEARCH_SEMAPHORE:
         print(f"[XianYu Detail] Processing: {game_url}")
         try:
@@ -433,7 +417,7 @@ class XydjWebSearch(NcatBotPlugin):
             if session.processing:
                 return
             
-            choice = re.sub(r'\[CQ:[^\]]+\]', '', event.raw_message).strip()
+            choice = RE_CQ_CODE.sub('', event.raw_message).strip()
             
             if choice == "0":
                 await event.reply(
@@ -498,7 +482,7 @@ class XydjWebSearch(NcatBotPlugin):
                 self.sessions[event.group_id] = session
                 
             except Exception as e:
-                logging.exception(f"搜索出错: {e}")
+                logger.exception(f"搜索出错: {e}")
                 await event.reply(
                     rtf=MessageArray([Reply(id=event.message_id), PlainText(text="发生错误，请稍后重试。")])
                 )

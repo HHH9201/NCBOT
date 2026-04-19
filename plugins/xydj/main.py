@@ -7,40 +7,26 @@
 - 适配 NcatBot 5.0 框架
 """
 import re
-import os
-import time
-import json
 import asyncio
 import logging
 import httpx
 import base64
 from bs4 import BeautifulSoup
-from typing import Optional, List, Dict, Any, Tuple
-from pathlib import Path
+from typing import Optional
 from ncatbot.plugin import BasePlugin
 from ncatbot.event.qq import GroupMessageEvent
 from ncatbot.types import PlainText, Reply, MessageArray, Image
 from ncatbot.types.qq import ForwardConstructor
 from ncatbot.core import registrar
-from dotenv import load_dotenv
-
-# 加载根目录 .env 配置
-env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
-load_dotenv(env_path)
 
 # 引入全局服务和配置
 from common import (
-    GLOBAL_CONFIG, db_manager
+    GLOBAL_CONFIG,
 )
 from common.db_permissions import db_permission_manager
 
 # 配置更清爽的日志格式
 logger = logging.getLogger("xydj")
-
-# 从环境变量读取配置 (带默认值)
-BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8978")
-APP_ID = os.getenv("APP_ID", "card_sender")
-APP_SECRET = os.getenv("APP_SECRET", "card_sender_secret")
 
 # 爬虫相关配置
 WEB_BASE_URL = "https://www.xianyudanji.top"
@@ -199,6 +185,8 @@ async def scrape_game_detail_and_save(game_name: str, detail_url: str):
                 elif "123云盘" in pan_name or "123网盘" in pan_name: target_pan = "pan123"
                 elif "移动网盘" in pan_name: target_pan = "mobile"
                 elif "迅雷" in pan_name: target_pan = "xunlei"
+                elif pan_name in ("在线", "联机版") or ("联机" in pan_name and "补丁" not in pan_name): target_pan = "online"
+                elif "补丁" in pan_name: target_pan = "patch"
                 
                 if not target_pan: continue
                 
@@ -244,24 +232,18 @@ async def search_game_from_db(game_name: str):
         text_lines = []
         games = []
         
-        # 过滤必须有下载链接的游戏（如果只有补丁链接，视为无效资源）
+        # 过滤必须有下载链接的游戏
         valid_cloud_games = []
-        main_url_fields = [
-            "baidu_url", "quark_url", "uc_url", "pan123_url", 
-            "xunlei_url", "mobile_url", "online_url"
-        ]
-        
         for g_data in cloud_games:
-            zh_name = g_data.get("zh_name", g_data.get("name", ""))
+            zh_name = g_data.get("zh_name", "")
             en_name = g_data.get("en_name", "")
             
             # 严格过滤：中/英文名必须包含完整的搜索关键词
             if game_name.lower() not in zh_name.lower() and game_name.lower() not in en_name.lower():
                 continue
 
-            # 必须拥有至少一个主下载链接（补丁链接不算）
-            has_main_link = any(g_data.get(f) for f in main_url_fields)
-            if has_main_link:
+            # 使用数据库返回的 has_link 字段，避免在此处拉取所有链接字段
+            if g_data.get("has_link"):
                 valid_cloud_games.append(g_data)
         
         if not valid_cloud_games:
@@ -269,7 +251,7 @@ async def search_game_from_db(game_name: str):
             return "暂未收录", None
 
         for idx, game_data in enumerate(valid_cloud_games):
-            zh_name = game_data.get("zh_name", game_data.get("name", ""))
+            zh_name = game_data.get("zh_name", "")
             en_name = game_data.get("en_name", "")
             display_text = f"{idx+1}. {zh_name}"
             if en_name: display_text += f"\n   英文名: {en_name}"
@@ -277,13 +259,102 @@ async def search_game_from_db(game_name: str):
             
             games.append({
                 "from_db": True,
-                "db_data": game_data,
+                "id": game_data.get("id"),
                 "title": zh_name
             })
         return "\n\n".join(text_lines), games
     except Exception as e:
         logger.error(f"[DB Search] 搜索失败: {e}")
         return "搜索服务异常，请稍后再试", None
+
+
+def _clean_field_text(value) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _looks_like_url(value) -> bool:
+    text = _clean_field_text(value)
+    return text.startswith(("http://", "https://"))
+
+
+def _looks_like_datetime(value) -> bool:
+    text = _clean_field_text(value)
+    if not text:
+        return False
+    return bool(
+        re.search(r"\d{4}年\d{1,2}月\d{1,2}日", text)
+        or re.search(r"\d{4}-\d{1,2}-\d{1,2}", text)
+        or re.search(r"\d{4}年\d{1,2}月\d{1,2}日\s+\d{1,2}:\d{2}", text)
+    )
+
+
+def _normalize_online_fields(game_data: dict) -> dict:
+    """纠正联机字段常见错位，避免旧脏数据导致展示异常。"""
+    raw_online_url = _clean_field_text(game_data.get("online_url"))
+    raw_patch_url = _clean_field_text(game_data.get("patch_url"))
+    raw_online_code = _clean_field_text(game_data.get("online_code"))
+    raw_online_at = _clean_field_text(game_data.get("online_at"))
+
+    urls = []
+    dates = []
+    texts = []
+    for value in (raw_online_url, raw_patch_url, raw_online_code, raw_online_at):
+        if not value:
+            continue
+        if _looks_like_url(value):
+            if value not in urls:
+                urls.append(value)
+        elif _looks_like_datetime(value):
+            if value not in dates:
+                dates.append(value)
+        else:
+            if value not in texts:
+                texts.append(value)
+
+    online_url = raw_online_url if _looks_like_url(raw_online_url) else ""
+    patch_url = raw_patch_url if _looks_like_url(raw_patch_url) else ""
+    online_at = raw_online_at if _looks_like_datetime(raw_online_at) else ""
+    online_code = raw_online_code
+    if _looks_like_url(online_code) or _looks_like_datetime(online_code):
+        online_code = ""
+
+    if not online_url and urls:
+        online_url = urls[0]
+    if not patch_url:
+        patch_url = next((url for url in urls if url != online_url), "")
+    if not online_at and dates:
+        online_at = dates[0]
+    if not online_code and texts:
+        online_code = texts[0]
+
+    return {
+        "online_url": online_url,
+        "patch_url": patch_url,
+        "online_code": online_code,
+        "online_at": online_at,
+    }
+
+
+def has_any_pan_link(game_data: dict) -> bool:
+    """判断资源详情里是否至少存在一个可发送的网盘链接。"""
+    link_keys = (
+        "baidu_url",
+        "quark_url",
+        "uc_url",
+        "online_url",
+        "patch_url",
+        "pan123_url",
+        "mobile_url",
+        "tianyi_url",
+        "xunlei_url",
+    )
+    for key in link_keys:
+        value = game_data.get(key)
+        if _looks_like_url(value):
+            return True
+    return False
 
 class SearchSession:
     def __init__(self, user_id, games, task=None, original_msg_id=None):
@@ -300,8 +371,22 @@ class Xydj(BasePlugin):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.sessions = {}
-        # 统一使用 self.api.misc 或 httpx
-        self.http_client = httpx.AsyncClient(timeout=30)
+        self.backend_url = GLOBAL_CONFIG.get("backend.url", "http://127.0.0.1:8978").rstrip("/")
+        self.app_id = GLOBAL_CONFIG.get("app.id", "card_sender")
+        self.app_secret = GLOBAL_CONFIG.get("app.secret", "")
+        self.http_client: Optional[httpx.AsyncClient] = None
+
+    async def _get_backend_client(self) -> httpx.AsyncClient:
+        if self.http_client is None:
+            self.http_client = httpx.AsyncClient(
+                base_url=self.backend_url,
+                timeout=30,
+                headers={
+                    "app-id": self.app_id,
+                    "app-secret": self.app_secret,
+                },
+            )
+        return self.http_client
 
     async def get_user_info(self, user_id):
         """获取用户信息，返回数据字典或 None"""
@@ -309,34 +394,40 @@ class Xydj(BasePlugin):
             # 修正接口路径：从 /api/admin/user_info 统一到正式权限校验接口
             # 注意：此处必须使用 resolve_openid 或直接查询 users 表的接口
             # 经过之前的优化，后端 /api/admin/user_info 应该已经支持通过 qq_id 查询
-            url = f"{BACKEND_URL}/api/admin/user_info?platform=qq_id&platform_id={user_id}"
-            headers = {"app-id": APP_ID, "app-secret": APP_SECRET}
-            
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(url, headers=headers)
-                
-                if resp.status_code == 200:
-                    res_json = resp.json()
-                    # 这里的 success 指的是接口请求成功，data 指的是查到了用户
-                    if res_json.get("success") and res_json.get("data"):
-                        user_data = res_json["data"]
-                        # 核心判定：只要这个 QQ 号在 users 表里有记录，就认为已验证
-                        if user_data.get("openid") or user_data.get("qq_id"):
-                            logger.info(f"[User Check] 确认用户 {user_id} 已存在，OpenID: {user_data.get('openid')}")
-                            return user_data
-                
-                # 记录非 200 或未查到数据的情况
-                if resp.status_code != 404:
-                    logger.warning(f"[User Check] 接口响应异常: {resp.status_code}, 内容: {resp.text[:100]}")
-                    
+            client = await self._get_backend_client()
+            resp = await client.get("/api/admin/user_info", params={
+                "platform": "qq_id",
+                "platform_id": user_id,
+            })
+
+            if resp.status_code == 200:
+                res_json = resp.json()
+                # 这里的 success 指的是接口请求成功，data 指的是查到了用户
+                if res_json.get("success") and res_json.get("data"):
+                    user_data = res_json["data"]
+                    # 核心判定：只要这个 QQ 号在 users 表里有记录，就认为已验证
+                    if user_data.get("openid") or user_data.get("qq_id"):
+                        logger.info(f"[User Check] 确认用户 {user_id} 已存在，OpenID: {user_data.get('openid')}")
+                        return user_data
+
+            # 记录非 200 或未查到数据的情况
+            if resp.status_code != 404:
+                logger.warning(f"[User Check] 接口响应异常: {resp.status_code}, 内容: {resp.text[:100]}")
+
             return None
         except Exception as e:
             logger.error(f"[User Check] 请求异常: {e}")
             return None
 
+    async def _has_bound_user(self, user_id: str) -> bool:
+        """确认当前 QQ 是否已经和后端用户体系完成绑定。"""
+        user_info = await self.get_user_info(user_id)
+        return bool(user_info)
+
     def _build_game_messages(self, game_data):
         """构建三段式消息内容：单机、联机、图片"""
         messages = []
+        online_fields = _normalize_online_fields(game_data)
         
         # 1. 单机版
         sp_content = ["【单机版】\n"]
@@ -363,13 +454,13 @@ class Xydj(BasePlugin):
         ]
         
         count = 1
-        for key, name, code_key in sp_pans:
+        for key, pan_name, code_key in sp_pans:
             url = game_data.get(key)
             if url:
-                sp_content.append(f"网盘{count}：{url}\n")
+                sp_content.append(f"{pan_name}：{url}\n")
                 code = game_data.get(code_key)
                 if code:
-                    sp_content.append(f"提取码：【{code}】\n")
+                    sp_content.append(f"{pan_name}提取码：【{code}】\n")
                 count += 1
                 if count > 3: break
                 
@@ -380,23 +471,23 @@ class Xydj(BasePlugin):
         messages.append("".join(sp_content))
         
         # 2. 联机版
-        online_url = game_data.get("online_url")
-        patch_url = game_data.get("patch_url")
+        online_url = online_fields["online_url"]
+        patch_url = online_fields["patch_url"]
         if online_url or patch_url:
             ol_content = ["【联机版】\n"]
             ol_content.append(f"游戏中文名字：{zh_name}\n")
             
-            # 联机版解压密码：直接使用 online_code 字段
-            ol_pwd = game_data.get("online_code")
-            if ol_pwd:
-                ol_content.append(f"解压密码：【{ol_pwd}】\n")
+            # online_code 在这里承载联机版版本/附加说明，旧数据可能有错位，已在上方做过纠正。
+            online_version = online_fields["online_code"]
+            if online_version:
+                ol_content.append(f"版本信息：【{online_version}】\n")
             
             if online_url:
-                ol_content.append(f"网盘1：{online_url}\n")
-            elif patch_url:
-                ol_content.append(f"网盘1：{patch_url}\n")
+                ol_content.append(f"联机版：{online_url}\n")
+            if patch_url:
+                ol_content.append(f"联机补丁：{patch_url}\n")
                 
-            online_at = game_data.get("online_at")
+            online_at = online_fields["online_at"]
             if online_at:
                 ol_content.append(f"最近更新时间：{online_at}\n")
             elif updated_at:
@@ -429,7 +520,7 @@ class Xydj(BasePlugin):
             logger.error(f"合并转发失败: {e}")
             return False
 
-    async def process_game_resource(self, game, event, original_msg_id=None):
+    async def process_game_resource(self, game, event):
         try:
             user_id = str(event.user_id)
             
@@ -442,57 +533,98 @@ class Xydj(BasePlugin):
                     return
                 game["db_data"] = db_data
                 game["from_db"] = True
+            else:
+                # 核心优化：如果来自数据库，此时只有 id，需要拉取完整详情
+                if "db_data" not in game and "id" in game:
+                    logger.info(f"[DB Detail] 延迟拉取完整资源详情: {game['title']} (ID: {game['id']})")
+                    full_data = await db_permission_manager.get_game_resource_by_id(game["id"])
+                    if not full_data:
+                        await event.reply("❌ 数据库资源已失效。")
+                        return
+                    game["db_data"] = full_data
 
-            # 1. 检查用户是否存在（是否有数据）
-            user_info = await self.get_user_info(user_id)
-            if user_info:
-                logger.info(f"[Auth] 用户 {user_id} 已存在记录，跳过验证直接发送资源。")
-                # 只要有数据，直接发送资源内容 (合并转发)
-                messages = self._build_game_messages(game["db_data"])
-                await self._send_final_forward(event.group_id, messages, user_id, event.sender.nickname)
-                # 显式回复一条提示
-                await event.reply(rtf=MessageArray([Reply(id=event.message_id), PlainText(text="✅ 您已完成过验证，资源已通过合并转发消息发送！")]))
-                return
+                # 数据库命中但没有任何网盘链接时，自动回退到网站抓取并回存数据库
+                if not has_any_pan_link(game["db_data"]):
+                    logger.info(f"[DB Detail] 数据库无可用网盘链接，回退网站抓取: {game['title']}")
+                    await event.reply("数据库资源缺少可用链接，正在从网站抓取最新资源，请稍候...")
 
-            # 2. 构造同步 Payload (机器人排版)
+                    detail_url = game["db_data"].get("detail_url")
+                    db_data = None
+                    if detail_url:
+                        db_data = await scrape_game_detail_and_save(game["title"], detail_url)
+
+                    if not db_data:
+                        _text_result, web_games = await search_game_from_web(game["title"])
+                        if web_games:
+                            db_data = await scrape_game_detail_and_save(game["title"], web_games[0]["detail_url"])
+
+                    if not db_data or not has_any_pan_link(db_data):
+                        await event.reply("❌ 数据库和网站都没有获取到可用资源链接。")
+                        return
+
+                    game["db_data"] = db_data
+
+            # 1. 构造同步 Payload (机器人排版)
             messages = self._build_game_messages(game["db_data"])
             # 同步给后端时，取所有文字部分合并，不包含图片
             content_text = "\n".join([m for m in messages if isinstance(m, str)])
             
-            # 3. 请求 Ticket
+            # 2. 请求 Ticket
             ticket_id = None
             res_data = {}
             logger.info(f"[PopReady] Sending Payload: {content_text[:50]}...")
-            async with httpx.AsyncClient() as client:
-                # 优先从池子拿
+            client = await self._get_backend_client()
+            # 优先从池子拿
+            resp = await client.post(
+                "/api/task/pop_ready",
+                json={
+                    "platform": "qq_id",
+                    "platform_id": user_id,
+                    "app_id": self.app_id,
+                    "resource_payload": content_text,
+                },
+            )
+            if resp.status_code != 200:
+                # 池子没有则创建
                 resp = await client.post(
-                    f"{BACKEND_URL}/api/task/pop_ready",
+                    "/api/task/create",
                     json={
-                        "platform": "qq_id", 
-                        "platform_id": user_id, 
-                        "app_id": APP_ID, 
-                        "resource_payload": content_text
+                        "platform": "qq_id",
+                        "platform_id": user_id,
+                        "app_id": self.app_id,
+                        "resource_payload": content_text,
                     },
-                    headers={"app-id": APP_ID, "app-secret": APP_SECRET}
                 )
-                if resp.status_code != 200:
-                    # 池子没有则创建
-                    resp = await client.post(
-                        f"{BACKEND_URL}/api/task/create",
-                        json={"platform": "qq_id", "platform_id": user_id, "app_id": APP_ID, "resource_payload": content_text},
-                        headers={"app-id": APP_ID, "app-secret": APP_SECRET}
-                    )
-                
-                if resp.status_code == 200:
-                    res_data = resp.json()
-                    ticket_id = res_data.get("ticket")
+
+            if resp.status_code == 200:
+                res_data = resp.json()
+                ticket_id = res_data.get("ticket")
 
             if ticket_id:
+                # 3. 以 Ticket 实际状态为准；只有 verified/claimed 才允许直接发送资源。
+                try:
+                    status_resp = await client.get("/api/user/get_result", params={"ticket": ticket_id}, timeout=5)
+                    if status_resp.status_code == 200:
+                        status_data = status_resp.json()
+                        status = status_data.get("status")
+                        bound_user = await self._has_bound_user(user_id)
+                        if status == "claimed" or (status == "verified" and bound_user):
+                            logger.info(f"[Auth] Ticket {ticket_id} 已验证且用户已绑定，直接发送资源。")
+                            await self._send_final_forward(event.group_id, messages, user_id, event.sender.nickname)
+                            return
+                        logger.info(
+                            f"[Auth] Ticket {ticket_id} 当前状态: {status or 'unknown'} | 绑定状态: {'yes' if bound_user else 'no'}，继续等待扫码验证。"
+                        )
+                    else:
+                        logger.warning(f"[Auth] 查询 Ticket 状态失败: HTTP {status_resp.status_code}")
+                except Exception as e:
+                    logger.warning(f"[Auth] 查询 Ticket 状态异常，回退扫码流程: {e}")
+
                 # 4. 下载并发送二维码
                 qrcode_url = res_data.get("qrcode_url")
                 msg_parts = [Reply(id=event.message_id)]
                 try:
-                    img_resp = await self.http_client.get(f"{BACKEND_URL}/api/task/qrcode/{ticket_id}", timeout=15)
+                    img_resp = await client.get(f"/api/task/qrcode/{ticket_id}", timeout=15)
                     if img_resp.status_code == 200:
                         img_size = len(img_resp.content)
                         logger.info(f"QR Code Size: {img_size} bytes")
@@ -505,32 +637,37 @@ class Xydj(BasePlugin):
                     logger.error(f"下载二维码异常: {e}")
                     msg_parts.append(Image(file=qrcode_url))
 
-                msg_parts.append(PlainText(text="\n✅ 请长按扫码点击“点击获取”，完成后我将立即在此发送资源链接！QQ内长按二维码也是可以的"))
+                msg_parts.append(PlainText(text="\n✅ 首次搜索需要扫码完成绑定验证；验证成功后，后续再搜索将无需扫码，可直接获取资源。请长按二维码点击“点击获取”，完成后我将立即在此发送资源链接。QQ 内也可以直接长按二维码。"))
                 
                 try:
                     await event.reply(rtf=MessageArray(msg_parts))
                 except Exception as e:
                     logger.error(f"发送二维码消息失败: {e}")
                     # 尝试只发送文字提示
-                    await event.reply(f"⚠️ 二维码发送失败，请尝试访问: {qrcode_url}\n扫码完成后我将发送资源。")
+                    await event.reply(f"⚠️ 二维码发送失败，请尝试访问: {qrcode_url}\n首次搜索需要先扫码完成绑定验证；验证成功后，后续搜索将无需扫码，我会直接发送资源。")
 
                 # 5. 启动轮询
-                asyncio.create_task(self._wait_and_send_resource(event, event.group_id, ticket_id, game, user_id, event.sender.nickname))
+                asyncio.create_task(self._wait_and_send_resource(event.group_id, ticket_id, game, user_id, event.sender.nickname))
+                return
+
+            await event.reply("❌ 创建验证任务失败，请稍后重试。")
         except Exception as e:
             logger.error(f"处理资源失败: {e}")
 
-    async def _wait_and_send_resource(self, event, group_id, ticket_id, game, user_id, nickname):
+    async def _wait_and_send_resource(self, group_id, ticket_id, game, user_id, nickname):
         messages = self._build_game_messages(game["db_data"])
         
         for _ in range(45):
             await asyncio.sleep(4)
             try:
-                resp = await self.http_client.get(f"{BACKEND_URL}/api/user/get_result?ticket={ticket_id}")
+                client = await self._get_backend_client()
+                resp = await client.get("/api/user/get_result", params={"ticket": ticket_id})
                 res = resp.json()
-                if res and res.get("status") in ["verified", "claimed"]:
+                status = res.get("status") if isinstance(res, dict) else None
+                bound_user = await self._has_bound_user(user_id)
+                if status == "claimed" or (status == "verified" and bound_user):
                     # 发送群消息
                     await self._send_final_forward(group_id, messages, user_id, nickname)
-                    await event.reply(rtf=MessageArray([PlainText(text="🎉 验证成功！资源已在上方以合并转发形式发出。")]))
                     return
             except: pass
 
@@ -557,9 +694,8 @@ class Xydj(BasePlugin):
                 return
             if msg.isdigit() and 1 <= int(msg) <= len(session.games):
                 game = session.games[int(msg)-1]
-                original_msg_id = session.original_msg_id
                 self._cleanup(event.group_id)
-                await self.process_game_resource(game, event, original_msg_id=original_msg_id)
+                await self.process_game_resource(game, event)
                 return
 
         # 2. 处理搜索命令
@@ -583,7 +719,7 @@ class Xydj(BasePlugin):
                 return
             
             if len(games) == 1:
-                await self.process_game_resource(games[0], event, original_msg_id=event.message_id)
+                await self.process_game_resource(games[0], event)
                 return
             
             if len(games) > 1:
@@ -594,3 +730,9 @@ class Xydj(BasePlugin):
 
     async def on_load(self):
         logger.info(f"[{self.name}] 插件已加载，版本: {self.version}")
+        await self._get_backend_client()
+
+    async def on_unload(self):
+        if self.http_client is not None:
+            await self.http_client.aclose()
+            self.http_client = None

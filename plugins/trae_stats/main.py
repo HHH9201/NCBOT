@@ -1,28 +1,40 @@
 # /home/hjh/BOT/NCBOT/plugins/trae_stats/main.py
-import os
-import httpx
 import logging
+from typing import Optional
+
+import httpx
 from ncatbot.plugin import NcatBotPlugin
-from ncatbot.event.qq import GroupMessageEvent, PrivateMessageEvent
+from ncatbot.event.qq import GroupMessageEvent
 from ncatbot.types import PlainText, MessageArray
 from ncatbot.core.registry import registrar
+
+from common import GLOBAL_CONFIG
 from common.permissions import permission_manager
 
-# 加载 .env 获取后端地址
-# plugins/trae_stats/main.py -> plugins/ -> root/
-env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
-BACKEND_URL = "http://127.0.0.1:8978"
-
-if os.path.exists(env_path):
-    with open(env_path, "r") as f:
-        for line in f:
-            if line.startswith("BACKEND_URL="):
-                BACKEND_URL = line.split("=")[1].strip()
-                break
+logger = logging.getLogger(__name__)
 
 class TraeStats(NcatBotPlugin):
     name = "trae_stats"
     version = "1.0.0"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.backend_url = GLOBAL_CONFIG.get("backend.url", "http://127.0.0.1:8978").rstrip("/")
+        self.http_client: Optional[httpx.AsyncClient] = None
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        if self.http_client is None:
+            self.http_client = httpx.AsyncClient(base_url=self.backend_url, timeout=10)
+        return self.http_client
+
+    async def on_load(self):
+        await self._get_client()
+        logger.info("%s v%s 已加载", self.name, self.version)
+
+    async def on_unload(self):
+        if self.http_client is not None:
+            await self.http_client.aclose()
+            self.http_client = None
 
     @registrar.on_group_message()
     async def on_group_message(self, event: GroupMessageEvent):
@@ -35,13 +47,13 @@ class TraeStats(NcatBotPlugin):
         msg = event.raw_message.strip()
         if msg == "当前额度":
             try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    resp = await client.get(f"{BACKEND_URL}/api/task/stats")
-                    if resp.status_code == 200:
-                        count = resp.json().get("data", {}).get("available_count", 0)
-                        # 使用 MessageArray 和 PlainText 形式进行回复
-                        await event.reply(rtf=MessageArray([PlainText(text=f"📊 当前可用额度：{count}")]))
-                    else:
-                        await event.reply(rtf=MessageArray([PlainText(text="❌ 接口响应异常")]))
+                client = await self._get_client()
+                resp = await client.get("/api/task/stats")
+                if resp.status_code == 200:
+                    count = resp.json().get("data", {}).get("available_count", 0)
+                    await event.reply(rtf=MessageArray([PlainText(text=f"📊 当前可用额度：{count}")]))
+                else:
+                    await event.reply(rtf=MessageArray([PlainText(text="❌ 接口响应异常")]))
             except Exception as e:
+                logger.error("[trae_stats] 获取额度失败: %s", e)
                 await event.reply(rtf=MessageArray([PlainText(text=f"❌ 获取失败: {str(e)}")]))

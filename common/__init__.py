@@ -1,5 +1,5 @@
 # /home/hjh/BOT/NCBOT/common/__init__.py
-from .config import GLOBAL_CONFIG, Config
+from .config import GLOBAL_CONFIG, Config, ROOT_DIR, ENV_FILE, CONFIG_FILE
 from .napcat import napcat_service, NapCatService
 from .ai import ai_service, AIService
 from .db import db_manager, DBManager
@@ -12,6 +12,7 @@ from .http_utils import http_client, AsyncHttpClient
 
 __all__ = [
     "GLOBAL_CONFIG", "Config",
+    "ROOT_DIR", "ENV_FILE", "CONFIG_FILE",
     "napcat_service", "NapCatService",
     "ai_service", "AIService",
     "db_manager", "DBManager",

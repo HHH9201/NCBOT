@@ -7,37 +7,23 @@
 - 不去网站进行搜索
 """
 import re
-import os
-import time
-import json
 import asyncio
 import logging
 import httpx
 import base64
-from typing import Optional, List, Dict, Any, Tuple
-from pathlib import Path
+from typing import Optional
 from ncatbot.plugin import NcatBotPlugin
 from ncatbot.event.qq import GroupMessageEvent
-from ncatbot.types import PlainText, Reply, MessageArray, Image
-from ncatbot.types.qq import ForwardConstructor
+from ncatbot.types import PlainText, Reply, MessageArray
 from ncatbot.core.registry import registrar
-from dotenv import load_dotenv
-
-# 加载根目录 .env 配置
-env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
-load_dotenv(env_path)
 
 # 引入全局服务和配置
 from common import (
-    GLOBAL_CONFIG, db_manager
+    GLOBAL_CONFIG,
 )
 from common.db_permissions import db_permission_manager
 
-# 配置更清爽的日志格式，去掉进程和线程信息
-logging.basicConfig(
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    level=logging.INFO
-)
+logger = logging.getLogger(__name__)
 
 # -------------------- 预编译正则表达式 --------------------
 RE_CQ_CODE = re.compile(r'\[CQ:[^\]]+\]')
@@ -104,6 +90,22 @@ class XydjDbSearch(NcatBotPlugin):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.sessions = {}
+        self.backend_url = GLOBAL_CONFIG.get("backend.url", "http://127.0.0.1:8978").rstrip("/")
+        self.app_id = GLOBAL_CONFIG.get("app.id", "card_sender")
+        self.app_secret = GLOBAL_CONFIG.get("app.secret", "")
+        self.http_client: Optional[httpx.AsyncClient] = None
+
+    async def _get_backend_client(self) -> httpx.AsyncClient:
+        if self.http_client is None:
+            self.http_client = httpx.AsyncClient(
+                base_url=self.backend_url,
+                timeout=15,
+                headers={
+                    "app-id": self.app_id,
+                    "app-secret": self.app_secret,
+                },
+            )
+        return self.http_client
 
     async def countdown(self, event, group_id):
         await asyncio.sleep(20)
@@ -236,10 +238,6 @@ class XydjDbSearch(NcatBotPlugin):
             zh_name = game.get("title", "")
             print(f"[搜索关键词] 中文名: {zh_name}")
 
-            BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8978")
-            APP_ID = os.getenv("APP_ID", "card_sender")
-            APP_SECRET = os.getenv("APP_SECRET", "card_sender_secret")
-
             # 构造小程序展示需要的资源载荷
             db_data = game.get("db_data", {})
             resource_payload = {
@@ -261,80 +259,75 @@ class XydjDbSearch(NcatBotPlugin):
                 "mobile_code": db_data.get("mobile_code", "")
             }
 
-            async with httpx.AsyncClient() as client:
-                try:
+            client = await self._get_backend_client()
+            try:
+                response = await client.post(
+                    "/api/task/pop_ready",
+                    json={
+                        "platform": "qq_id",
+                        "platform_id": str(event.user_id),
+                        "app_id": self.app_id,
+                        "resource_payload": resource_payload
+                    },
+                    timeout=10.0
+                )
+                
+                if response.status_code != 200:
+                    print(f"[Resource] 池子暂无现成票据 (Code: {response.status_code})，回退到实时生成...")
                     response = await client.post(
-                        f"{BACKEND_URL}/api/task/pop_ready",
+                        "/api/task/create",
                         json={
                             "platform": "qq_id",
                             "platform_id": str(event.user_id),
-                            "app_id": APP_ID,
+                            "app_id": self.app_id,
                             "resource_payload": resource_payload
                         },
-                        headers={"app-id": APP_ID, "app-secret": APP_SECRET},
-                        timeout=10.0
-                    )
-                    
-                    if response.status_code != 200:
-                        print(f"[Resource] 池子暂无现成票据 (Code: {response.status_code})，回退到实时生成...")
-                        response = await client.post(
-                            f"{BACKEND_URL}/api/task/create",
-                            json={
-                                "platform": "qq_id",
-                                "platform_id": str(event.user_id),
-                                "app_id": APP_ID,
-                                "resource_payload": resource_payload
-                            },
-                            headers={"app-id": APP_ID, "app-secret": APP_SECRET},
-                            timeout=15.0
-                        )
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        ticket_id = data.get("ticket")
-                        qrcode_url = data.get("qrcode_url")
-                        
-                        if ticket_id and qrcode_url:
-                            # 强制通过后端本地代理下载二维码，统一转换为 base64 发送
-                            try:
-                                download_url = f"{BACKEND_URL}/api/task/qrcode/{ticket_id}"
-                                
-                                print(f"[Resource] 正在从本地代理下载二维码: {download_url}")
-                                img_resp = await client.get(download_url, timeout=15)
-                                if img_resp.status_code == 200:
-                                    import base64
-                                    img_b64 = f"base64://{base64.b64encode(img_resp.content).decode()}"
-                                    print(f"[Resource] 二维码代理下载并转换为 base64 成功")
-                                    await event.reply(image=img_b64)
-                                else:
-                                    print(f"[Resource] 代理下载失败 (Code: {img_resp.status_code})，尝试原始 URL")
-                                    await event.reply(image=qrcode_url)
-                            except Exception as download_e:
-                                print(f"[Resource] 代理下载异常: {download_e}")
-                                await event.reply(image=qrcode_url)
-                            
-                            asyncio.create_task(self._wait_and_send_resource(
-                                event, event.group_id, ticket_id, game, zh_name
-                            ))
-                            return
-                    
-                    await event.reply(
-                        rtf=MessageArray([Reply(id=event.message_id), PlainText(text="❌ 系统正忙，请 10 秒后再次搜索重试。")])
+                        timeout=15.0
                     )
                 
-                except httpx.ConnectError as ce:
-                    print(f"[Resource] 后端连接失败，启用降级模式: {ce}")
+                if response.status_code == 200:
+                    data = response.json()
+                    ticket_id = data.get("ticket")
+                    qrcode_url = data.get("qrcode_url")
+                    
+                    if ticket_id and qrcode_url:
+                        # 强制通过后端本地代理下载二维码，统一转换为 base64 发送
+                        try:
+                            print(f"[Resource] 正在从本地代理下载二维码: {ticket_id}")
+                            img_resp = await client.get(f"/api/task/qrcode/{ticket_id}", timeout=15)
+                            if img_resp.status_code == 200:
+                                img_b64 = f"base64://{base64.b64encode(img_resp.content).decode()}"
+                                print(f"[Resource] 二维码代理下载并转换为 base64 成功")
+                                await event.reply(image=img_b64)
+                            else:
+                                print(f"[Resource] 代理下载失败 (Code: {img_resp.status_code})，尝试原始 URL")
+                                await event.reply(image=qrcode_url)
+                        except Exception as download_e:
+                            print(f"[Resource] 代理下载异常: {download_e}")
+                            await event.reply(image=qrcode_url)
+                        
+                            asyncio.create_task(self._wait_and_send_resource(
+                                event, event.group_id, ticket_id, game
+                            ))
+                        return
+                
+                await event.reply(
+                    rtf=MessageArray([Reply(id=event.message_id), PlainText(text="❌ 系统正忙，请 10 秒后再次搜索重试。")])
+                )
+            
+            except httpx.ConnectError as ce:
+                print(f"[Resource] 后端连接失败，启用降级模式: {ce}")
+                await event.reply(
+                    rtf=MessageArray([Reply(id=event.message_id), PlainText(text="⚠️ 后端服务暂时不可用，为您直接发送游戏资源...")])
+                )
+                if game.get("from_db") and game.get("db_data"):
+                    content = self._build_complete_game_content(game["db_data"])
+                    await self._send_final_forward(event.group_id, content, str(event.user_id), event.sender.nickname)
+                else:
                     await event.reply(
-                        rtf=MessageArray([Reply(id=event.message_id), PlainText(text="⚠️ 后端服务暂时不可用，为您直接发送游戏资源...")])
+                        rtf=MessageArray([Reply(id=event.message_id), PlainText(text="❌ 获取游戏资源失败，请稍后重试。")])
                     )
-                    if game.get("from_db") and game.get("db_data"):
-                        content = self._build_complete_game_content(game["db_data"])
-                        await self._send_final_forward(event.group_id, content, str(event.user_id), event.sender.nickname)
-                    else:
-                        await event.reply(
-                            rtf=MessageArray([Reply(id=event.message_id), PlainText(text="❌ 获取游戏资源失败，请稍后重试。")])
-                        )
-                    return
+                return
 
         except Exception as e:
             import traceback
@@ -344,24 +337,20 @@ class XydjDbSearch(NcatBotPlugin):
                 rtf=MessageArray([Reply(id=event.message_id), PlainText(text=f"处理失败: {str(e)}")])
             )
 
-    async def _wait_and_send_resource(self, event, group_id, ticket_id, game, chinese_display):
+    async def _wait_and_send_resource(self, event, group_id, ticket_id, game):
         max_retries = 45
         delay = 4
         
         await event.reply(
             rtf=MessageArray([Reply(id=event.message_id), PlainText(text="✅ 请扫码在小程序内点击“修成正果”，完成后我将立即在此发送资源链接！")])
         )
-        
-        BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8978")
-        
-        for i in range(max_retries):
+
+        for _ in range(max_retries):
             await asyncio.sleep(delay)
             try:
-                query_url = f"{BACKEND_URL}/api/user/get_result?ticket={ticket_id}"
-                
-                async with httpx.AsyncClient() as client:
-                    resp = await client.get(query_url, timeout=5)
-                    response = resp.json()
+                client = await self._get_backend_client()
+                resp = await client.get("/api/user/get_result", params={"ticket": ticket_id}, timeout=5)
+                response = resp.json()
                 
                 print(f"[Poll Ticket] Ticket: {ticket_id}, Status Response: {response}")
                         
@@ -470,3 +459,9 @@ class XydjDbSearch(NcatBotPlugin):
 
     async def on_load(self):
         print(f"{self.name} 插件已加载，版本: {self.version}")
+        await self._get_backend_client()
+
+    async def on_unload(self):
+        if self.http_client is not None:
+            await self.http_client.aclose()
+            self.http_client = None
