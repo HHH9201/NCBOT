@@ -1,0 +1,6 @@
+name = "help_center"
+version = "1.0.0"
+description = "帮助中心：发送美观的帮助菜单图片"
+main = "main.py"
+author = "Bot"
+

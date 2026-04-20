@@ -1,0 +1,5 @@
+[plugin]
+name = "github_stars"
+version = "1.0.0"
+description = "GitHub Star 管理插件，支持批量增加/减少 Star"
+author = "Assistant"

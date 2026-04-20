@@ -1,0 +1,13 @@
+services:
+  napcat:
+    image: docker.1ms.run/mlikiowa/napcat-docker:latest
+    container_name: napcat-ncbot
+    restart: always
+    environment:
+      - ACCOUNT=58805194
+      - MODE=ws
+    volumes:
+      - /home/hjh/BOT/napcat/napcat_data:/app/.config/QQ
+    ports:
+      - "3001:3001"
+      - "6099:6099"

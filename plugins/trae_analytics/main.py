@@ -59,8 +59,17 @@ class TraeAnalytics(NcatBotPlugin):
                 if resp.status_code == 200:
                     data = resp.json()
                     if data.get("success"):
-                        count = data.get("data", {}).get("today_new_users", 0)
-                        await event.reply(rtf=MessageArray([PlainText(text=f"📊 今日新增用户数：{count} 人")]))
+                        res_data = data.get("data", {})
+                        today_count = res_data.get("today_new_users", 0)
+                        cumulative_count = res_data.get("cumulative_since_0420", 0)
+                        
+                        msg_text = (
+                            f"📊 数据统计报告\n"
+                            f"─" * 15 + "\n"
+                            f"📅 今日新增用户：{today_count} 人\n"
+                            f"📈 累计新增(自04-20)：{cumulative_count} 人"
+                        )
+                        await event.reply(rtf=MessageArray([PlainText(text=msg_text)]))
                     else:
                         await event.reply(rtf=MessageArray([PlainText(text=f"❌ 获取失败: {data.get('message', '未知错误')}")]))
                 else:

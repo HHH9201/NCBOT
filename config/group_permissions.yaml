@@ -29,6 +29,7 @@ groups:
       steam: true
       resource_collector: true
       trae_stats: true
+      help_center: true
 
   # 仅允许在该群使用 Trae 额度统计
   "894356872":
@@ -36,7 +37,7 @@ groups:
       txt: false
       trae_stats: false
 
-  # 资源收集群 - 禁止所有功能，只保留静默收集资源
+  # 资源收集群 (864170514) - 只保留静默收集功能，禁用所有互动命令和回复
   "864170514":
     plugins:
       ai_chat: false
@@ -44,10 +45,16 @@ groups:
       welcome: false
       txt: false
       help: false
+      help_center: false
       epic: false
       steam: false
       resource_collector: true
       trae_stats: false
+      trae_analytics: false
+      trae_admin: false
+      trae-email: false
+      crawler_notifier: false
+      welcome: false
 
 # 黑名单群（完全禁用机器人）
 blacklist: []

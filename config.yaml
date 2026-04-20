@@ -7,10 +7,10 @@ adapters:
     report_self_message: false
     stop_napcat: false
     webui_token: NcatBot
-    webui_uri: http://localhost:6099
-    ws_listen_ip: localhost
+    webui_uri: http://127.0.0.1:6099
+    ws_listen_ip: 127.0.0.1
     ws_token: he031701
-    ws_uri: ws://localhost:3001
+    ws_uri: ws://127.0.0.1:3001
   enabled: true
   platform: qq
   type: napcat
