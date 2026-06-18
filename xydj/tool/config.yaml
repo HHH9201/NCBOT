@@ -1,0 +1,18 @@
+# xydj 插件配置文件
+
+# 代理配置
+proxy: "http://127.0.0.1:7899"
+
+# ByrutGame 反代地址
+byrut_base: "https://napcat.1783069903.workers.dev"
+
+# Cookies 配置 (xianyudanji.to)
+cookies:
+  ripro_notice_cookie: "1"
+  PHPSESSID: "97ak6j5u1n1a6pkbk9do4rsva6"
+  wordpress_logged_in_6ecf6dea701570829ebc52b61ed750f6: "HHH9201%7C1775834803%7C9KEzq3HY4ZRSJFlTnf15xRmXWCdGFeYsgBbDiN1NEEv%7C22aae845c8c0cebdece19c5f0d310cdac4146018f8e8835aa904a81bef6090dd"
+
+# 资源路径配置
+images:
+  qq_img: "QQ.png"
+  backup_img: "种子.png"

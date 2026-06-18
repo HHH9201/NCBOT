@@ -1,0 +1,31 @@
+# ===== AI 接口配置（兼容 OpenAI 协议的任意厂商均可使用）=====
+# 填写 api_key + base_url + model 三项即可切换厂商
+#
+# 常见厂商预设：
+#   小米 MiMo  : base_url=https://api.xiaomimimo.com/v1     model=mimo-v2.5-pro
+#   DeepSeek  : base_url=https://api.deepseek.com          model=deepseek-chat
+#   OpenAI    : base_url=https://api.openai.com/v1         model=gpt-4o-mini
+#   智谱 GLM  : base_url=https://open.bigmodel.cn/api/paas/v4  model=glm-4-flash
+#   通义千问  : base_url=https://dashscope.aliyuncs.com/compatible-mode/v1  model=qwen-turbo
+#   Kimi      : base_url=https://api.moonshot.cn/v1        model=moonshot-v1-8k
+#   本地Ollama: base_url=http://localhost:11434/v1         model=qwen2.5:7b
+api_key: "sk-fba3420a15a84dd187825166cb7dd0f8"
+base_url: "https://api.deepseek.com"
+model: "deepseek-v4-flash"
+temperature: 1.3
+max_tokens: 128
+# 思考模式（DeepSeek V4 系列，默认关闭以加速响应；聊天场景无需思考）
+thinking: false
+
+# ===== 行为配置 =====
+# 自动回复冷却秒数（距离上一条消息超过此值才自动回复，@触发不受此限）
+cooldown: 10
+# 回复后冷却秒数（猫猫回复一次后，此时间内不再自动回复，@触发不受此限）
+reply_cooldown: 120
+# 自动回复概率（0-1，非@触发时按此概率随机决定是否回复，@触发始终回复）
+reply_probability: 0.2
+# 历史记录最大保留行数（超过自动截断保留最新部分）
+max_history_lines: 200
+
+# ===== 管理员 QQ（用于私聊修改 prompt / 开关猫猫）=====
+manager_id: "1783069903"

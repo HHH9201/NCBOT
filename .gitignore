@@ -1,0 +1,15 @@
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+
+# 数据库与运行时数据缓存（按需保留各插件 data 目录下的配置文件）
+*.sqlite
+*.sqlite-journal

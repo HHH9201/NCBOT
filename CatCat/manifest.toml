@@ -1,0 +1,5 @@
+name = "CatCat"
+version = "1.2.0"
+main = "main.py"
+
+[dependencies]

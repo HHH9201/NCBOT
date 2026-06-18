@@ -1,0 +1,6 @@
+proxy_type: null
+proxy_host: 127.0.0.1
+proxy_port: 7890
+proxy_username: null
+proxy_password: null
+superuser_only: false

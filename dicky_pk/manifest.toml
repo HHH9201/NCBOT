@@ -1,0 +1,5 @@
+name = "dicky_pk"
+version = "1.0.0"
+main = "main.py"
+
+[dependencies]

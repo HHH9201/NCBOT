@@ -1,0 +1,5 @@
+name = "group_join_review"
+version = "1.0.0"
+main = "main.py"
+
+[dependencies]
